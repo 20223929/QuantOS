@@ -1,0 +1,29 @@
+name: Backend Test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -e .
+
+      - name: Run tests
+        run: |
+          cd backend
+          pytest
