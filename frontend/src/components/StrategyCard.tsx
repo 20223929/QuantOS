@@ -1,8 +1,9 @@
 export default function StrategyCard() {
   return (
     <section>
-      <h2>Strategies</h2>
-      <div>MA Strategy: Stopped</div>
+      <h2>Strategy</h2>
+      <div>Status: Ready</div>
+      <div>MA Cross</div>
     </section>
-  )
+  );
 }
