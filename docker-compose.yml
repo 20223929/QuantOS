@@ -5,6 +5,8 @@ services:
     container_name: quantos-backend
     ports:
       - "8000:8000"
+    environment:
+      QUANTOS_ENV: development
 
   frontend:
     build:
