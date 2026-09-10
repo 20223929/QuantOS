@@ -17,6 +17,12 @@ class MACrossStrategy(BaseStrategy):
         self.long_window = 20
         self.prices: list[float] = []
 
+    def start(self):
+        self.prices.clear()
+
+    def stop(self):
+        pass
+
     def on_bar(self, price: float):
         self.prices.append(price)
 
