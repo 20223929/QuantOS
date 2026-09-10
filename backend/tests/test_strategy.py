@@ -1,6 +1,8 @@
-from app.strategy.ma_strategy import MAStrategy
+from backend.app.strategies.ma_cross import MACrossStrategy
 
 
-def test_ma_strategy_init():
-    strategy = MAStrategy()
-    assert strategy is not None
+def test_ma_cross_waits_for_enough_data():
+    strategy = MACrossStrategy()
+
+    for price in range(10):
+        assert strategy.on_bar(float(price)) is None
