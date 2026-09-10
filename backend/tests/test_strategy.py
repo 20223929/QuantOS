@@ -1,4 +1,4 @@
-from backend.app.strategies.ma_cross import MACrossStrategy
+from app.strategies.ma_cross import MACrossStrategy
 
 
 def test_ma_cross_waits_for_enough_data():
