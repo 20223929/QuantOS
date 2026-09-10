@@ -3,10 +3,10 @@ name: QuantOS Regression
 on:
   push:
     branches:
-      - origin/master
+      - master
   pull_request:
     branches:
-      - origin/master
+      - master
   workflow_dispatch:
 
 jobs:
@@ -46,4 +46,5 @@ jobs:
         run: |
           cd frontend
           npm install
+          npx tsc --noEmit
           npm run build
