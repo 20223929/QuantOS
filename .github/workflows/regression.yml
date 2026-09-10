@@ -2,25 +2,48 @@ name: QuantOS Regression
 
 on:
   push:
-    branches: [origin/master]
+    branches:
+      - origin/master
   pull_request:
+    branches:
+      - origin/master
+  workflow_dispatch:
 
 jobs:
   backend:
+    name: Backend Regression
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -e backend || true
-      - run: pytest backend/tests || true
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -e ".[dev]"
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          pytest
 
   frontend:
+    name: Frontend Regression
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: cd frontend && npm install && npm run build
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
