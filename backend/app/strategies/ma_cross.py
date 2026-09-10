@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from backend.app.engine.base_strategy import BaseStrategy
+from app.engine.base_strategy import BaseStrategy
 
 
 @dataclass
