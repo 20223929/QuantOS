@@ -3,10 +3,11 @@ name: Frontend Test
 on:
   push:
     branches:
-      - origin/master
+      - master
   pull_request:
     branches:
-      - origin/master
+      - master
+  workflow_dispatch:
 
 jobs:
   frontend-test:
@@ -24,6 +25,11 @@ jobs:
         run: |
           cd frontend
           npm install
+
+      - name: Type Check
+        run: |
+          cd frontend
+          npx tsc --noEmit
 
       - name: Build
         run: |
