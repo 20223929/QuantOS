@@ -1,13 +1,11 @@
 from backend.app.storage.models.order import OrderRecord
+from .base_repository import BaseRepository
 
 
-class OrderRepository:
-    def __init__(self):
-        self.items = []
+class OrderRepository(BaseRepository):
+    def __init__(self, session):
+        super().__init__(session)
+        self.model = OrderRecord
 
-    def save(self, order: OrderRecord):
-        self.items.append(order)
-        return order
-
-    def all(self):
-        return self.items
+    def save_order(self, order: OrderRecord):
+        return self.save(order)
