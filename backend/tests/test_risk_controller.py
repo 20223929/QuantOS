@@ -17,3 +17,9 @@ def test_risk_controller_rejects_exceed_position():
     controller = RiskController(RiskLimit(max_position=1))
     result = controller.check_order(Order(2))
     assert result.allowed is False
+
+
+def test_risk_controller_rejects_drawdown():
+    controller = RiskController(RiskLimit(max_drawdown=0.1))
+    result = controller.check_drawdown(0.2)
+    assert result.allowed is False
