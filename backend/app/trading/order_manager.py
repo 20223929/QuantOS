@@ -1,10 +1,32 @@
-class OrderManager:
-    def __init__(self):
-        self.orders = []
+from app.trading.order import Order
 
-    async def submit(self, order):
-        self.orders.append(order)
+
+class OrderManager:
+    """Coordinate order lifecycle between strategy, risk and broker."""
+
+    def __init__(self, broker, risk_controller=None):
+        self.broker = broker
+        self.risk_controller = risk_controller
+        self.orders = {}
+
+    def create_order(self, symbol: str, side: str, volume: int, price: float | None = None) -> Order:
+        order = Order(
+            symbol=symbol,
+            side=side,
+            volume=volume,
+            price=price,
+        )
+        self.orders[id(order)] = order
         return order
 
-    async def cancel(self, order_id):
-        return {"order_id": order_id, "status": "cancelled"}
+    def submit(self, order: Order):
+        if self.risk_controller:
+            allowed = self.risk_controller.check_order(order)
+            if not allowed:
+                order.status = "REJECTED"
+                return order
+
+        return self.broker.submit_order(order)
+
+    def cancel(self, order):
+        return self.broker.cancel_order(order)
