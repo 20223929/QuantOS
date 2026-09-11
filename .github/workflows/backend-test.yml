@@ -3,10 +3,11 @@ name: Backend Test
 on:
   push:
     branches:
-      - origin/master
+      - develop
   pull_request:
     branches:
-      - origin/master
+      - develop
+  workflow_dispatch:
 
 jobs:
   backend-test:
