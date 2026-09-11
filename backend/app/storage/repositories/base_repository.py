@@ -14,3 +14,10 @@ class BaseRepository(Generic[T]):
 
     def all(self):
         return self.session.query(self.model).all()
+
+    def get(self, record_id):
+        return self.session.get(self.model, record_id)
+
+    def delete(self, record):
+        self.session.delete(record)
+        self.session.commit()
