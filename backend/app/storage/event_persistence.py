@@ -11,4 +11,10 @@ class EventPersistenceHandler:
         if name == "TradeEvent" and "trade" in self.repositories:
             return self.repositories["trade"].save(event.data)
 
+        if name == "PositionEvent" and "position" in self.repositories:
+            return self.repositories["position"].save(event.data)
+
+        if name == "MarketDataEvent" and "market" in self.repositories:
+            return self.repositories["market"].save(event.data)
+
         return None
