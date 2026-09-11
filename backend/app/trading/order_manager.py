@@ -21,8 +21,8 @@ class OrderManager:
 
     def submit(self, order: Order):
         if self.risk_controller:
-            allowed = self.risk_controller.check_order(order)
-            if not allowed:
+            decision = self.risk_controller.check_order(order)
+            if not decision.allowed:
                 order.status = "REJECTED"
                 return order
 
