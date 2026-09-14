@@ -151,6 +151,18 @@ async def dispatch_execution_outbox():
     return execution_outbox_dispatcher.dispatch_once()
 
 
+@router.get("/outbox/status")
+async def execution_outbox_status():
+    with _orm.session() as session:
+        repository = ExecutionOutboxRepository(session)
+        pending = len(repository.pending())
+    return {
+        "pending": pending,
+        "metrics": execution_outbox_dispatcher.snapshot(),
+        "sink_events": len(execution_event_sink.snapshot()),
+    }
+
+
 @router.get("/orders")
 async def list_orders():
     with _orm.session() as session:
