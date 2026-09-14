@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from app.storage.models.outbox import ExecutionOutboxModel
 
@@ -38,11 +38,62 @@ class ExecutionOutboxRepository:
     def pending(self, limit: int = 100):
         statement = (
             select(ExecutionOutboxModel)
-            .where(ExecutionOutboxModel.status == "PENDING")
+            .where(
+                ExecutionOutboxModel.status == "PENDING",
+                or_(
+                    ExecutionOutboxModel.claim_owner.is_(None),
+                    ExecutionOutboxModel.claim_expires_at.is_(None),
+                    ExecutionOutboxModel.claim_expires_at <= datetime.now(UTC),
+                ),
+            )
             .order_by(ExecutionOutboxModel.id)
             .limit(limit)
         )
         return list(self.session.scalars(statement))
+
+    def status_counts(self, now: datetime | None = None) -> dict[str, int]:
+        now = now or datetime.now(UTC)
+        pending = self.session.scalar(
+            select(func.count())
+            .select_from(ExecutionOutboxModel)
+            .where(
+                ExecutionOutboxModel.status == "PENDING",
+                or_(
+                    ExecutionOutboxModel.claim_owner.is_(None),
+                    ExecutionOutboxModel.claim_expires_at.is_(None),
+                    ExecutionOutboxModel.claim_expires_at <= now,
+                ),
+            )
+        )
+        claimed = self.session.scalar(
+            select(func.count())
+            .select_from(ExecutionOutboxModel)
+            .where(
+                ExecutionOutboxModel.status == "PENDING",
+                ExecutionOutboxModel.claim_owner.is_not(None),
+                ExecutionOutboxModel.claim_expires_at > now,
+            )
+        )
+        expired = self.session.scalar(
+            select(func.count())
+            .select_from(ExecutionOutboxModel)
+            .where(
+                ExecutionOutboxModel.status == "PENDING",
+                ExecutionOutboxModel.claim_owner.is_not(None),
+                ExecutionOutboxModel.claim_expires_at <= now,
+            )
+        )
+        processed = self.session.scalar(
+            select(func.count())
+            .select_from(ExecutionOutboxModel)
+            .where(ExecutionOutboxModel.status == "PROCESSED")
+        )
+        return {
+            "pending": int(pending or 0),
+            "claimed": int(claimed or 0),
+            "expired": int(expired or 0),
+            "processed": int(processed or 0),
+        }
 
     def claim_pending(
         self,
@@ -103,6 +154,29 @@ class ExecutionOutboxRepository:
                 .order_by(ExecutionOutboxModel.id)
             )
         )
+
+    def renew_claim(
+        self,
+        event_id: str,
+        owner: str,
+        claim_seconds: int = 30,
+        now: datetime | None = None,
+    ):
+        if not owner:
+            raise ValueError("owner must be non-empty")
+        if claim_seconds <= 0:
+            raise ValueError("claim_seconds must be positive")
+        now = now or datetime.now(UTC)
+        record = self.session.scalar(
+            select(ExecutionOutboxModel).where(ExecutionOutboxModel.event_id == str(event_id))
+        )
+        if record is None or record.status != "PENDING" or record.claim_owner != owner:
+            return None
+        if record.claim_expires_at is not None and record.claim_expires_at <= now:
+            return None
+        record.claim_expires_at = now + timedelta(seconds=claim_seconds)
+        self.session.flush()
+        return record
 
     def mark_processed(self, event_id: str, owner: str | None = None):
         record = self.session.scalar(
