@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
@@ -7,19 +8,25 @@ from app.storage.models.base import Base
 from app.storage.trading_repository import TradingRepository
 
 
+@dataclass
 class Order:
-    order_id = "O001"
-    symbol = "SHFE.rb"
-    side = "BUY"
-    volume = 1
-    price = 3500.0
-    status = "FINISHED"
-    offset = "OPEN"
+    order_id: str = "O001"
+    symbol: str = "SHFE.rb"
+    side: str = "BUY"
+    volume: int = 1
+    price: float = 3500.0
+    status: str = "FINISHED"
+    offset: str = "OPEN"
+
+
+def _new_engine():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    return engine
 
 
 def test_trading_repository_round_trip():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = _new_engine()
 
     with Session(engine) as session:
         repository = TradingRepository(session)
@@ -49,8 +56,7 @@ def test_trading_repository_round_trip():
 
 
 def test_order_write_is_idempotent_and_keeps_single_row():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = _new_engine()
 
     with Session(engine) as session:
         repository = TradingRepository(session)
@@ -60,10 +66,7 @@ def test_order_write_is_idempotent_and_keeps_single_row():
         first_id = first.id
         first_created_at = first.created_at
 
-        Order.volume = 2
-        Order.price = 3510.0
-        Order.status = "SUCCESS"
-        second = repository.save_order(Order())
+        second = repository.save_order(Order(volume=2, price=3510.0, status="SUCCESS"))
         session.commit()
 
         assert second.id == first_id
@@ -75,8 +78,7 @@ def test_order_write_is_idempotent_and_keeps_single_row():
 
 
 def test_trade_write_is_idempotent_and_links_vendor_order_id():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = _new_engine()
 
     with Session(engine) as session:
         repository = TradingRepository(session)
@@ -112,8 +114,7 @@ def test_trade_write_is_idempotent_and_links_vendor_order_id():
 
 
 def test_persisted_state_survives_new_session():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = _new_engine()
 
     with Session(engine) as session:
         repository = TradingRepository(session)
