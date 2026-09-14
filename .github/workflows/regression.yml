@@ -76,13 +76,13 @@ jobs:
           version=$(node -p "require('./frontend/package.json').version")
           test -n "$version"
           cat > frontend/dist/release-manifest.txt <<EOF
-QuantOS frontend release manifest
-version=$version
-commit=${GITHUB_SHA}
-ref=${GITHUB_REF_NAME}
-workflow=${GITHUB_WORKFLOW}
-run_id=${GITHUB_RUN_ID}
-EOF
+          QuantOS frontend release manifest
+          version=$version
+          commit=${GITHUB_SHA}
+          ref=${GITHUB_REF_NAME}
+          workflow=${GITHUB_WORKFLOW}
+          run_id=${GITHUB_RUN_ID}
+          EOF
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
