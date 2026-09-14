@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -38,14 +39,15 @@ def isolated_trading(monkeypatch, tmp_path):
     return orm, engine
 
 
-@pytest.mark.asyncio
-async def test_submit_order_persists_full_execution_chain_and_dispatches(isolated_trading):
+def test_submit_order_persists_full_execution_chain_and_dispatches(isolated_trading):
     orm, _ = isolated_trading
 
-    response = await trading_api.submit_order(
-        {"symbol": "SHFE.rb", "side": "BUY", "volume": 5, "price": 3500, "offset": "OPEN"}
-    )
+    async def scenario():
+        return await trading_api.submit_order(
+            {"symbol": "SHFE.rb", "side": "BUY", "volume": 5, "price": 3500, "offset": "OPEN"}
+        )
 
+    response = asyncio.run(scenario())
     assert response["success"] is True
     assert response["order"]["status"] == "FILLED"
 
@@ -63,15 +65,16 @@ async def test_submit_order_persists_full_execution_chain_and_dispatches(isolate
         assert event.status == "PENDING"
 
 
-@pytest.mark.asyncio
-async def test_rejected_order_is_persisted_without_trade_position_or_outbox(isolated_trading):
+def test_rejected_order_is_persisted_without_trade_position_or_outbox(isolated_trading):
     orm, _ = isolated_trading
     trading_api.execution_engine.status = "REJECTED"
 
-    response = await trading_api.submit_order(
-        {"symbol": "SHFE.rb", "side": "BUY", "volume": 5, "price": 3500}
-    )
+    async def scenario():
+        return await trading_api.submit_order(
+            {"symbol": "SHFE.rb", "side": "BUY", "volume": 5, "price": 3500}
+        )
 
+    response = asyncio.run(scenario())
     assert response["success"] is False
     assert response["order"]["status"] == "REJECTED"
 
@@ -82,25 +85,30 @@ async def test_rejected_order_is_persisted_without_trade_position_or_outbox(isol
         assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 0
 
 
-@pytest.mark.asyncio
-async def test_invalid_order_request_is_rejected_before_execution(isolated_trading):
+def test_invalid_order_request_is_rejected_before_execution(isolated_trading):
     orm, engine = isolated_trading
 
-    with pytest.raises(trading_api.HTTPException) as exc_info:
-        await trading_api.submit_order({"symbol": "", "side": "BUY", "volume": 1})
+    async def scenario():
+        with pytest.raises(trading_api.HTTPException) as exc_info:
+            await trading_api.submit_order({"symbol": "", "side": "BUY", "volume": 1})
+        return exc_info.value
 
-    assert exc_info.value.status_code == 400
+    exc = asyncio.run(scenario())
+    assert exc.status_code == 400
     assert engine.positions == {}
     with orm.session() as session:
         assert session.scalar(select(func.count(OrderModel.id))) == 0
 
 
-@pytest.mark.asyncio
-async def test_outbox_status_reflects_pending_then_processed(isolated_trading, monkeypatch):
+def test_outbox_status_reflects_pending_then_processed(isolated_trading, monkeypatch):
     orm, _ = isolated_trading
-    response = await trading_api.submit_order(
-        {"symbol": "SHFE.rb", "side": "BUY", "volume": 2, "price": 3500}
-    )
+
+    async def submit():
+        return await trading_api.submit_order(
+            {"symbol": "SHFE.rb", "side": "BUY", "volume": 2, "price": 3500}
+        )
+
+    response = asyncio.run(submit())
     assert response["success"] is True
 
     sink_events = []
@@ -108,30 +116,34 @@ async def test_outbox_status_reflects_pending_then_processed(isolated_trading, m
     dispatcher = trading_api.ExecutionOutboxDispatcher(orm.session, trading_api.execution_event_sink.handle)
     monkeypatch.setattr(trading_api, "execution_outbox_dispatcher", dispatcher)
 
-    pending = await trading_api.execution_outbox_status()
+    async def status_and_dispatch():
+        pending = await trading_api.execution_outbox_status()
+        dispatched = await trading_api.dispatch_execution_outbox()
+        final = await trading_api.execution_outbox_status()
+        return pending, dispatched, final
+
+    pending, dispatched, final = asyncio.run(status_and_dispatch())
     assert pending["pending"] == 1
     assert pending["processed"] == 0
-
-    dispatched = await trading_api.dispatch_execution_outbox()
     assert dispatched == {"delivered": 1, "retried": 0, "selected": 1}
     assert len(sink_events) == 1
-
-    final = await trading_api.execution_outbox_status()
     assert final["pending"] == 0
     assert final["processed"] == 1
     assert final["sink_events"] == 1
 
 
-@pytest.mark.asyncio
-async def test_get_order_and_list_positions_match_persisted_state(isolated_trading):
-    await trading_api.submit_order(
-        {"symbol": "SHFE.rb", "side": "BUY", "volume": 3, "price": 3500}
-    )
+def test_get_order_and_list_positions_match_persisted_state(isolated_trading):
+    async def submit():
+        return await trading_api.submit_order(
+            {"symbol": "SHFE.rb", "side": "BUY", "volume": 3, "price": 3500}
+        )
 
-    listed = await trading_api.list_orders()
+    asyncio.run(submit())
+
+    listed = asyncio.run(trading_api.list_orders())
     order_id = listed["orders"][0]["id"]
-    fetched = await trading_api.get_order(order_id)
-    positions = await trading_api.list_positions()
+    fetched = asyncio.run(trading_api.get_order(order_id))
+    positions = asyncio.run(trading_api.list_positions())
 
     assert fetched["order"]["id"] == order_id
     assert fetched["order"]["status"] == "FILLED"
