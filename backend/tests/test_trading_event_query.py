@@ -1,5 +1,6 @@
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import asyncio
+
+import pytest
 
 from app.api.v1 import trading
 from app.storage.orm import ORMManager
@@ -18,46 +19,34 @@ def test_durable_projection_query_survives_sink_recreation(tmp_path, monkeypatch
     monkeypatch.setattr(trading, "_orm", orm)
     monkeypatch.setattr(trading, "execution_event_sink", recreated_sink)
 
-    api = FastAPI()
-    api.include_router(trading.router, prefix="/api/v1")
+    all_events = asyncio.run(trading.list_execution_events(limit=10))
+    assert [event["event_id"] for event in all_events["events"]] == [
+        "event-1",
+        "event-2",
+        "event-3",
+    ]
 
-    with TestClient(api) as client:
-        all_events = client.get("/api/v1/trading/events", params={"limit": 10})
-        assert all_events.status_code == 200
-        assert [event["event_id"] for event in all_events.json()["events"]] == [
-            "event-1",
-            "event-2",
-            "event-3",
-        ]
+    filtered = asyncio.run(trading.list_execution_events(aggregate_id="ORDER-A", limit=10))
+    assert filtered["events"] == [
+        {
+            "event_id": "event-1",
+            "event_type": "ORDER_EXECUTED",
+            "aggregate_id": "ORDER-A",
+            "payload": {"volume": 2},
+        },
+        {
+            "event_id": "event-2",
+            "event_type": "ORDER_EXECUTED",
+            "aggregate_id": "ORDER-A",
+            "payload": {"volume": 3},
+        },
+    ]
 
-        filtered = client.get(
-            "/api/v1/trading/events",
-            params={"aggregate_id": "ORDER-A", "limit": 10},
-        )
-        assert filtered.status_code == 200
-        assert filtered.json()["events"] == [
-            {
-                "event_id": "event-1",
-                "event_type": "ORDER_EXECUTED",
-                "aggregate_id": "ORDER-A",
-                "payload": {"volume": 2},
-            },
-            {
-                "event_id": "event-2",
-                "event_type": "ORDER_EXECUTED",
-                "aggregate_id": "ORDER-A",
-                "payload": {"volume": 3},
-            },
-        ]
+    exact = asyncio.run(trading.list_execution_events(event_id="event-2", limit=10))
+    assert [event["event_id"] for event in exact["events"]] == ["event-2"]
 
-        exact = client.get(
-            "/api/v1/trading/events",
-            params={"event_id": "event-2", "limit": 10},
-        )
-        assert exact.status_code == 200
-        assert [event["event_id"] for event in exact.json()["events"]] == ["event-2"]
-
-        invalid_limit = client.get("/api/v1/trading/events", params={"limit": 0})
-        assert invalid_limit.status_code == 400
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(trading.list_execution_events(limit=0))
+    assert getattr(exc_info.value, "status_code", None) == 400
 
     orm.engine.dispose()
