@@ -113,6 +113,78 @@ def test_trade_write_is_idempotent_and_links_vendor_order_id():
         assert len(repository.list_trades()) == 1
 
 
+def test_partial_fills_advance_lifecycle_and_ignore_duplicate_trade_event():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        order = repository.save_order(Order(volume=5, status="SUBMITTED"))
+        session.commit()
+
+        first = repository.apply_trade({
+            "trade_id": "T-PART-1",
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "price": order.price,
+            "volume": 2,
+        })
+        session.commit()
+        assert first.trade_id == "T-PART-1"
+        assert repository.order_filled_volume(order.id) == 2
+        assert repository.get_order(order.order_id).status == "PARTIALLY_FILLED"
+
+        duplicate = repository.apply_trade({
+            "trade_id": "T-PART-1",
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "price": 3501,
+            "volume": 2,
+        })
+        session.commit()
+        assert duplicate.id == first.id
+        assert repository.order_filled_volume(order.id) == 2
+        assert len(repository.list_trades()) == 1
+
+        repository.apply_trade({
+            "trade_id": "T-PART-2",
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "price": 3502,
+            "volume": 3,
+        })
+        session.commit()
+        assert repository.order_filled_volume(order.id) == 5
+        assert repository.get_order(order.order_id).status == "FILLED"
+        assert len(repository.list_trades()) == 2
+
+
+def test_cancelled_order_does_not_regress_to_partial_on_late_duplicate_state():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        order = repository.save_order(Order(volume=5, status="SUBMITTED"))
+        session.commit()
+
+        repository.update_order_status(order.order_id, "CANCELLED")
+        session.commit()
+        repository.apply_trade({
+            "trade_id": "T-LATE-FILL",
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side,
+            "price": order.price,
+            "volume": 1,
+        })
+        session.commit()
+
+        assert repository.get_order(order.order_id).status == "CANCELLED"
+        assert repository.order_filled_volume(order.id) == 1
+
+
 def test_persisted_state_survives_new_session():
     engine = _new_engine()
 
