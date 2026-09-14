@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.storage.models.outbox import ExecutionOutboxModel
 
@@ -44,24 +44,67 @@ class ExecutionOutboxRepository:
         )
         return list(self.session.scalars(statement))
 
-    def mark_processed(self, event_id: str):
+    def claim_pending(
+        self,
+        limit: int,
+        owner: str,
+        now: datetime | None = None,
+        claim_seconds: int = 30,
+    ):
+        if limit <= 0:
+            return []
+        if claim_seconds <= 0:
+            raise ValueError("claim_seconds must be positive")
+        now = now or datetime.now(UTC)
+        expires_at = now + timedelta(seconds=claim_seconds)
+        statement = (
+            select(ExecutionOutboxModel)
+            .where(
+                ExecutionOutboxModel.status == "PENDING",
+                or_(
+                    ExecutionOutboxModel.claim_owner.is_(None),
+                    ExecutionOutboxModel.claim_expires_at.is_(None),
+                    ExecutionOutboxModel.claim_expires_at <= now,
+                ),
+            )
+            .order_by(ExecutionOutboxModel.id)
+            .limit(limit)
+        )
+        events = list(self.session.scalars(statement))
+        claimed = []
+        for event in events:
+            event.claim_owner = owner
+            event.claim_expires_at = expires_at
+            claimed.append(event)
+        self.session.flush()
+        return claimed
+
+    def mark_processed(self, event_id: str, owner: str | None = None):
         record = self.session.scalar(
             select(ExecutionOutboxModel).where(ExecutionOutboxModel.event_id == str(event_id))
         )
         if record is None:
+            return None
+        if owner is not None and record.claim_owner != owner:
             return None
         record.status = "PROCESSED"
         record.processed_at = datetime.now(UTC)
+        record.claim_owner = None
+        record.claim_expires_at = None
         self.session.flush()
         return record
 
-    def mark_retry(self, event_id: str):
+    def mark_retry(self, event_id: str, owner: str | None = None):
         record = self.session.scalar(
             select(ExecutionOutboxModel).where(ExecutionOutboxModel.event_id == str(event_id))
         )
         if record is None:
             return None
+        if owner is not None and record.claim_owner != owner:
+            return None
         record.status = "PENDING"
         record.attempts = int(record.attempts or 0) + 1
+        record.claim_owner = None
+        record.claim_expires_at = None
         self.session.flush()
         return record
