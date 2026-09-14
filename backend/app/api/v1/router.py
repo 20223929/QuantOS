@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from backend.app.api.v1 import backtest, market, strategy
+from app.api.v1 import backtest, market, strategy
 
 api_router = APIRouter()
 
