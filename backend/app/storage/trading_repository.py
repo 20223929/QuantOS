@@ -133,12 +133,19 @@ class TradingRepository:
         return record
 
     def recover_positions_from_trades(self):
-        """Rebuild net positions from committed trades for process restart recovery."""
+        """Rebuild positions from committed trades, including clearing stale symbols."""
         trades = self.list_trades()
         net: dict[str, float] = {}
         for trade in trades:
             multiplier = 1.0 if trade.side.upper() in {"BUY", "LONG"} else -1.0
             net[trade.symbol] = net.get(trade.symbol, 0.0) + multiplier * float(trade.volume)
+
+        existing_positions = self.list_positions()
+        known_symbols = set(net)
+        for position in existing_positions:
+            if position.symbol not in known_symbols:
+                net[position.symbol] = 0.0
+
         for symbol, volume in net.items():
             self.upsert_position(symbol, volume)
         return net
