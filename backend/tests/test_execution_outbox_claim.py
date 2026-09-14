@@ -24,7 +24,7 @@ def test_claim_pending_assigns_owner_and_expiry():
         events = repository.claim_pending(10, "worker-a", now=now, claim_seconds=30)
         assert [event.event_id for event in events] == ["claim-1"]
         assert events[0].claim_owner == "worker-a"
-        assert events[0].claim_expires_at == now + timedelta(seconds=30)
+        assert events[0].claim_expires_at.replace(tzinfo=UTC) == now + timedelta(seconds=30)
         session.commit()
 
 
