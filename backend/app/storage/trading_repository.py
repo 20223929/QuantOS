@@ -70,9 +70,6 @@ class TradingRepository:
     def save_trade(self, trade):
         trade_id = str(trade.get("trade_id") or trade.get("id") or uuid4())
         record = self.session.scalar(select(TradeModel).where(TradeModel.trade_id == trade_id))
-        if record is None:
-            record = TradeModel(trade_id=trade_id, created_at=datetime.now(UTC))
-            self.session.add(record)
 
         raw_order_id = trade.get("order_id")
         internal_order_id = None
@@ -85,11 +82,23 @@ class TradingRepository:
                 int(raw_order_id_str) if raw_order_id_str.isdigit() else None
             )
 
-        record.order_id = internal_order_id
-        record.symbol = trade["symbol"]
-        record.side = str(trade["side"]).upper()
-        record.price = float(trade["price"])
-        record.volume = float(trade["volume"])
+        if record is None:
+            record = TradeModel(
+                trade_id=trade_id,
+                order_id=internal_order_id,
+                symbol=trade["symbol"],
+                side=str(trade["side"]).upper(),
+                price=float(trade["price"]),
+                volume=float(trade["volume"]),
+                created_at=datetime.now(UTC),
+            )
+            self.session.add(record)
+        else:
+            record.order_id = internal_order_id
+            record.symbol = trade["symbol"]
+            record.side = str(trade["side"]).upper()
+            record.price = float(trade["price"])
+            record.volume = float(trade["volume"])
         self.session.flush()
         return record
 
