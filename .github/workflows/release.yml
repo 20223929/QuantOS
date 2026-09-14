@@ -40,14 +40,13 @@ jobs:
       - name: Create release manifest
         run: |
           version=$(node -p "require('./frontend/package.json').version")
-          cat > release-manifest.txt <<EOF
-QuantOS release manifest
-version=$version
-tag=${GITHUB_REF_NAME}
-commit=${GITHUB_SHA}
-workflow=${GITHUB_WORKFLOW}
-run_id=${GITHUB_RUN_ID}
-EOF
+          printf '%s\n' \
+            'QuantOS release manifest' \
+            "version=$version" \
+            "tag=${GITHUB_REF_NAME}" \
+            "commit=${GITHUB_SHA}" \
+            "workflow=${GITHUB_WORKFLOW}" \
+            "run_id=${GITHUB_RUN_ID}" > release-manifest.txt
 
       - name: Upload release manifest
         uses: actions/upload-artifact@v4
