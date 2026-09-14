@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.storage.models.consumption import ConsumedExecutionEventModel
 
@@ -31,13 +32,15 @@ class ConsumedExecutionEventRepository:
         )
         self.session.add(record)
         try:
-            self.session.flush()
-        except Exception:
-            self.session.rollback()
+            with self.session.begin_nested():
+                self.session.flush()
+        except IntegrityError:
             existing = self.session.scalar(
                 select(ConsumedExecutionEventModel).where(
                     ConsumedExecutionEventModel.event_id == event_id
                 )
             )
-            return existing is None
+            if existing is not None:
+                return False
+            raise
         return True
