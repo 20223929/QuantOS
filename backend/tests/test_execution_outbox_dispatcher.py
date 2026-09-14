@@ -184,13 +184,14 @@ def test_processed_claim_cannot_be_reused_after_expiry():
         repository.enqueue("ORDER_EXECUTED", "O-FENCE", {}, event_id="dispatch-fence")
         claimed = repository.claim_pending(limit=1, owner="worker-a", now=time_now_minus(seconds=60), claim_seconds=1)
         assert len(claimed) == 1
+        event_id = claimed[0].id
         session.commit()
     with session_factory() as session:
         repository = ExecutionOutboxRepository(session)
         processed = repository.mark_processed("dispatch-fence", owner="worker-a", now=time_now_minus(seconds=58))
         assert processed is None
         session.rollback()
-        event = session.get(type(claimed[0]), claimed[0].id)
+        event = session.get(type(claimed[0]), event_id)
         assert event.status == "PENDING"
         assert event.claim_owner == "worker-a"
 
