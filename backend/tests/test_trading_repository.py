@@ -298,3 +298,65 @@ def test_persisted_state_survives_new_session():
         assert persisted_trade.order_id == persisted_order.id
         assert persisted_position.symbol == "SHFE.rb"
         assert persisted_position.volume == 1
+
+
+def test_reconcile_order_states_from_trade_ledger_repairs_partial_and_filled_states():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        partial = repository.save_order(Order(order_id="O-PARTIAL", volume=5, status="SUBMITTED"))
+        filled = repository.save_order(Order(order_id="O-FILLED", volume=5, status="PARTIALLY_FILLED"))
+        cancelled = repository.save_order(Order(order_id="O-CANCELLED", volume=5, status="CANCELLED"))
+        session.commit()
+
+        repository.save_trade({
+            "trade_id": "T-RECON-P1",
+            "order_id": partial.order_id,
+            "symbol": partial.symbol,
+            "side": partial.side,
+            "price": partial.price,
+            "volume": 2,
+        })
+        repository.save_trade({
+            "trade_id": "T-RECON-F1",
+            "order_id": filled.order_id,
+            "symbol": filled.symbol,
+            "side": filled.side,
+            "price": filled.price,
+            "volume": 2,
+        })
+        repository.save_trade({
+            "trade_id": "T-RECON-F2",
+            "order_id": filled.order_id,
+            "symbol": filled.symbol,
+            "side": filled.side,
+            "price": filled.price,
+            "volume": 3,
+        })
+        repository.save_trade({
+            "trade_id": "T-RECON-C1",
+            "order_id": cancelled.order_id,
+            "symbol": cancelled.symbol,
+            "side": cancelled.side,
+            "price": cancelled.price,
+            "volume": 1,
+        })
+        session.commit()
+
+        partial.status = "SUBMITTED"
+        filled.status = "PARTIALLY_FILLED"
+        changed = repository.reconcile_order_states_from_trades()
+        assert changed == 2
+        session.commit()
+
+        assert repository.get_order(partial.order_id).status == "PARTIALLY_FILLED"
+        assert repository.get_order(filled.order_id).status == "FILLED"
+        assert repository.get_order(cancelled.order_id).status == "CANCELLED"
+
+        changed_again = repository.reconcile_order_states_from_trades()
+        session.commit()
+        assert changed_again == 0
+        assert repository.order_filled_volume(partial.id) == 2
+        assert repository.order_filled_volume(filled.id) == 5
+        assert repository.order_filled_volume(cancelled.id) == 1
