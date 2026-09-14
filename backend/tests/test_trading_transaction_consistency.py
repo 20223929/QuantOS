@@ -158,7 +158,9 @@ def test_restart_recovery_reconciles_order_state_and_fill_cache_from_trade_ledge
     with Session(engine) as session:
         repository = TradingRepository(session)
         repository.save_order(Order(order_id="O-REPLAY", volume=10, status="SUBMITTED"))
-        repository.apply_trade(_trade("T-REPLAY-1", "O-REPLAY", 4))
+        # Persist the authoritative ledger entry without applying its derived
+        # order-state transition; recovery must rebuild that transition.
+        repository.save_trade(_trade("T-REPLAY-1", "O-REPLAY", 4))
         session.commit()
 
     with Session(engine) as session:
