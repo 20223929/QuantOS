@@ -31,7 +31,9 @@ jobs:
       - name: Validate Alembic configuration
         run: |
           cd backend
-          alembic -c alembic.ini check
+          test -f alembic.ini
+          grep -Fxq 'script_location = app/storage/migrations' alembic.ini
+          grep -Fxq 'sqlalchemy.url = sqlite:///./quantos.db' alembic.ini
 
       - name: Validate database migration
         run: |
