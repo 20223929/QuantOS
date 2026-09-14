@@ -102,9 +102,9 @@ def test_status_counts_separate_pending_claimed_expired_and_processed():
         repository.enqueue("ORDER_EXECUTED", "O-EXPIRED", {}, event_id="status-expired")
         repository.enqueue("ORDER_EXECUTED", "O-PROCESSED", {}, event_id="status-processed")
         repository.claim_pending(1, "worker-a", now=start, claim_seconds=30)
-        repository.claim_pending(1, "worker-b", now=start, claim_seconds=-1) if False else None
         expired = repository.claim_pending(1, "worker-b", now=start, claim_seconds=1)
-        expired[0].claim_expires_at = start - timedelta(seconds=1)
+        assert expired
+        expired[0].claim_expires_at = (start - timedelta(seconds=1)).replace(tzinfo=None)
         repository.mark_processed("status-processed")
         session.commit()
 
