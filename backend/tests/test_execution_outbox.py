@@ -50,15 +50,16 @@ def test_execution_event_retry_increments_attempts_then_can_be_processed():
             {"order_id": "O-RETRY"},
             event_id="execution-O-RETRY",
         )
+        event_id = event.event_id
         session.commit()
 
-        retried = repository.mark_retry(event.event_id)
+        retried = repository.mark_retry(event_id)
         session.commit()
         assert retried.status == "PENDING"
         assert retried.attempts == 1
         assert repository.pending()[0].event_id == "execution-O-RETRY"
 
-        processed = repository.mark_processed(event.event_id)
+        processed = repository.mark_processed(event_id)
         session.commit()
         assert processed.status == "PROCESSED"
         assert processed.processed_at is not None
@@ -90,19 +91,20 @@ def test_execution_event_survives_new_session():
 def test_processed_event_is_not_redelivered_after_restart():
     engine = _new_engine()
 
+    event_id = "execution-O-PROCESSED"
     with Session(engine) as session:
         repository = ExecutionOutboxRepository(session)
-        event = repository.enqueue(
+        repository.enqueue(
             "ORDER_EXECUTED",
             "O-PROCESSED",
             {"order_id": "O-PROCESSED"},
-            event_id="execution-O-PROCESSED",
+            event_id=event_id,
         )
         session.commit()
 
     with Session(engine) as session:
         repository = ExecutionOutboxRepository(session)
-        processed = repository.mark_processed(event.event_id)
+        processed = repository.mark_processed(event_id)
         session.commit()
         assert processed.status == "PROCESSED"
 
@@ -127,9 +129,10 @@ def test_retry_event_is_replayable_after_restart_without_resetting_attempt_count
             {"order_id": "O-REPLAY", "volume": 1},
             event_id="execution-O-REPLAY",
         )
+        event_id = event.event_id
         session.commit()
 
-        repository.mark_retry(event.event_id)
+        repository.mark_retry(event_id)
         session.commit()
         assert event.attempts == 1
 
