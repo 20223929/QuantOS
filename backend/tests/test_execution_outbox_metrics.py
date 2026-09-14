@@ -26,7 +26,13 @@ def test_dispatcher_metrics_accumulate_delivery_and_retry_counts():
 
     dispatcher = ExecutionOutboxDispatcher(session_factory, handler)
     assert dispatcher.dispatch_once() == {"delivered": 1, "retried": 1, "selected": 2}
-    assert dispatcher.snapshot() == {"delivered": 1, "retried": 1, "selected": 2}
+    assert dispatcher.snapshot() == {
+        "delivered": 1,
+        "retried": 1,
+        "selected": 2,
+        "claim_renewed": 0,
+        "claim_lost": 0,
+    }
 
 
 def test_dispatcher_metrics_include_second_attempt():
@@ -48,4 +54,10 @@ def test_dispatcher_metrics_include_second_attempt():
     dispatcher.dispatch_once()
     dispatcher.dispatch_once()
 
-    assert dispatcher.snapshot() == {"delivered": 1, "retried": 1, "selected": 2}
+    assert dispatcher.snapshot() == {
+        "delivered": 1,
+        "retried": 1,
+        "selected": 2,
+        "claim_renewed": 0,
+        "claim_lost": 0,
+    }
