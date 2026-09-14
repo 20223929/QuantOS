@@ -63,6 +63,27 @@ def test_sink_deduplicates_replayed_execution_event():
     ]
 
 
+def test_sink_uses_event_id_for_same_order_lifecycle_events():
+    sink = ExecutionEventSink()
+
+    sink.handle("ORDER_EXECUTED", "O-SINK-PARTIAL", {"event_id": "fill-1", "volume": 2})
+    sink.handle("ORDER_EXECUTED", "O-SINK-PARTIAL", {"event_id": "fill-2", "volume": 3})
+    sink.handle("ORDER_EXECUTED", "O-SINK-PARTIAL", {"event_id": "fill-2", "volume": 999})
+
+    assert sink.snapshot() == [
+        {
+            "event_type": "ORDER_EXECUTED",
+            "aggregate_id": "O-SINK-PARTIAL",
+            "payload": {"event_id": "fill-1", "volume": 2},
+        },
+        {
+            "event_type": "ORDER_EXECUTED",
+            "aggregate_id": "O-SINK-PARTIAL",
+            "payload": {"event_id": "fill-2", "volume": 3},
+        },
+    ]
+
+
 def test_sink_allows_reuse_of_evicted_event_key():
     sink = ExecutionEventSink(max_events=1)
 
