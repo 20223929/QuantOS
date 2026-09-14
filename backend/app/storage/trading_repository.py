@@ -133,6 +133,29 @@ class TradingRepository:
         )
         return {str(order_id): float(volume or 0.0) for order_id, volume in rows if order_id is not None}
 
+    def reconcile_order_states_from_trades(self) -> int:
+        """Reconcile durable order lifecycle state from the authoritative trade ledger."""
+        changed = 0
+        for record in self.list_orders():
+            filled_volume = self.order_filled_volume(record.id)
+            if filled_volume <= 0:
+                continue
+
+            if filled_volume >= float(record.volume):
+                target_status = "FILLED"
+            elif record.status not in {"CANCELLED", "REJECTED"}:
+                target_status = "PARTIALLY_FILLED"
+            else:
+                continue
+
+            merged_status = _merge_order_status(record.status, target_status)
+            if merged_status != record.status:
+                record.status = merged_status
+                changed += 1
+
+        self.session.flush()
+        return changed
+
     def save_trade(self, trade):
         trade_id = str(trade.get("trade_id") or trade.get("id") or uuid4())
         with self.session.no_autoflush:
