@@ -25,10 +25,7 @@ _DB_PATH = Path("data/quantos.db")
 _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _orm = ORMManager(f"sqlite:///{_DB_PATH}")
 _orm.create_tables()
-execution_outbox_dispatcher = ExecutionOutboxDispatcher(
-    _orm.session,
-    execution_event_sink.handle,
-)
+execution_outbox_dispatcher = ExecutionOutboxDispatcher(_orm.session, execution_event_sink.handle)
 
 
 def _load_persisted_positions() -> None:
@@ -38,10 +35,7 @@ def _load_persisted_positions() -> None:
         if recovered:
             session.commit()
         for record in repository.list_positions():
-            execution_engine.positions[record.symbol] = Position(
-                symbol=record.symbol,
-                volume=int(record.volume),
-            )
+            execution_engine.positions[record.symbol] = Position(symbol=record.symbol, volume=int(record.volume))
 
 
 _load_persisted_positions()
@@ -49,39 +43,12 @@ _load_persisted_positions()
 
 def serialize_order(order: dict | Order) -> dict:
     if isinstance(order, dict):
-        return {
-            "id": order.get("id"),
-            "symbol": order.get("symbol"),
-            "side": order.get("side"),
-            "volume": order.get("volume"),
-            "price": order.get("price"),
-            "offset": order.get("offset", "OPEN"),
-            "status": order.get("status"),
-            "reason": order.get("reason", ""),
-        }
-    return {
-        "id": order.order_id,
-        "symbol": order.symbol,
-        "side": order.side,
-        "volume": order.volume,
-        "price": order.price,
-        "offset": order.offset,
-        "status": order.status,
-        "reason": order.reason,
-    }
+        return {"id": order.get("id"), "symbol": order.get("symbol"), "side": order.get("side"), "volume": order.get("volume"), "price": order.get("price"), "offset": order.get("offset", "OPEN"), "status": order.get("status"), "reason": order.get("reason", "")}
+    return {"id": order.order_id, "symbol": order.symbol, "side": order.side, "volume": order.volume, "price": order.price, "offset": order.offset, "status": order.status, "reason": order.reason}
 
 
 def serialize_order_record(record) -> dict:
-    return {
-        "id": record.order_id,
-        "symbol": record.symbol,
-        "side": record.side,
-        "volume": record.volume,
-        "price": record.price,
-        "offset": record.offset,
-        "status": record.status,
-        "reason": "",
-    }
+    return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": ""}
 
 
 def persist_execution(order: Order) -> None:
@@ -91,30 +58,11 @@ def persist_execution(order: Order) -> None:
         try:
             record = repository.save_order(order)
             if order.status == "FILLED":
-                trade = {
-                    "trade_id": f"trade-{order.order_id}",
-                    "order_id": record.id,
-                    "symbol": order.symbol,
-                    "side": order.side,
-                    "price": order.price,
-                    "volume": order.volume,
-                }
+                trade = {"trade_id": f"trade-{order.order_id}", "order_id": record.id, "symbol": order.symbol, "side": order.side, "price": order.price, "volume": order.volume}
                 repository.apply_trade(trade)
                 position = execution_engine.positions[order.symbol]
                 repository.upsert_position(order.symbol, position.volume)
-                outbox.enqueue(
-                    event_type="ORDER_EXECUTED",
-                    aggregate_id=order.order_id,
-                    event_id=f"order-executed:{order.order_id}",
-                    payload={
-                        "order": serialize_order(order),
-                        "trade": trade,
-                        "position": {
-                            "symbol": order.symbol,
-                            "volume": position.volume,
-                        },
-                    },
-                )
+                outbox.enqueue(event_type="ORDER_EXECUTED", aggregate_id=order.order_id, event_id=f"order-executed:{order.order_id}", payload={"order": serialize_order(order), "trade": trade, "position": {"symbol": order.symbol, "volume": position.volume}})
             session.commit()
         except Exception:
             session.rollback()
@@ -132,18 +80,13 @@ async def submit_order(payload: dict):
         raise HTTPException(status_code=400, detail="symbol, side and positive volume are required")
     if offset not in {"OPEN", "CLOSE", "CLOSETODAY", "CLOSEYESTERDAY"}:
         raise HTTPException(status_code=400, detail="unsupported offset")
-
     order = Order(symbol=symbol, side=side, volume=volume, price=price, offset=offset)
     result = execution_engine.execute(order)
     try:
         persist_execution(order)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"failed to persist execution: {exc}") from exc
-    return {
-        "success": result.success,
-        "message": result.message,
-        "order": serialize_order(order),
-    }
+    return {"success": result.success, "message": result.message, "order": serialize_order(order)}
 
 
 @router.post("/outbox/dispatch")
@@ -155,12 +98,8 @@ async def dispatch_execution_outbox():
 async def execution_outbox_status():
     with _orm.session() as session:
         repository = ExecutionOutboxRepository(session)
-        pending = len(repository.pending())
-    return {
-        "pending": pending,
-        "metrics": execution_outbox_dispatcher.snapshot(),
-        "sink_events": len(execution_event_sink.snapshot()),
-    }
+        counts = repository.status_counts()
+    return {**counts, "metrics": execution_outbox_dispatcher.snapshot(), "sink_events": len(execution_event_sink.snapshot())}
 
 
 @router.get("/orders")
@@ -186,14 +125,12 @@ async def cancel_order(order_id: str):
     order = broker.query_orders().get(order_id)
     if order is None:
         raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
-
     result = broker.cancel_order(order_id)
     status = str(result.get("status", "")).upper()
     if status == "NOT_CANCELLABLE":
         raise HTTPException(status_code=409, detail=f"order cannot be cancelled: {order_id}")
     if status == "NOT_FOUND":
         raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
-
     with _orm.session() as session:
         repository = TradingRepository(session)
         repository.update_order_status(order_id, status)
@@ -214,8 +151,4 @@ async def risk_state():
     with _orm.session() as session:
         repository = TradingRepository(session)
         positions = {record.symbol: record.volume for record in repository.list_positions()}
-    return {
-        "max_position": risk_controller.limit.max_position,
-        "max_drawdown": risk_controller.limit.max_drawdown,
-        "positions": positions,
-    }
+    return {"max_position": risk_controller.limit.max_position, "max_drawdown": risk_controller.limit.max_drawdown, "positions": positions}
