@@ -18,6 +18,14 @@ class ExecutionOutboxMetrics:
     claim_lost: int = 0
 
 
+@dataclass(frozen=True)
+class _ClaimedEvent:
+    event_id: str
+    event_type: str
+    aggregate_id: str
+    payload: str
+
+
 class ExecutionOutboxDispatcher:
     """Deliver durable execution events with per-event retry isolation."""
 
@@ -97,13 +105,22 @@ class ExecutionOutboxDispatcher:
                 owner=self.owner,
                 claim_seconds=self.claim_seconds,
             )
+            claimed_events = [
+                _ClaimedEvent(
+                    event_id=event.event_id,
+                    event_type=event.event_type,
+                    aggregate_id=event.aggregate_id,
+                    payload=event.payload,
+                )
+                for event in events
+            ]
             session.commit()
 
         delivered = 0
         retried = 0
         claim_lost = 0
 
-        for event in events:
+        for event in claimed_events:
             stop_event = threading.Event()
             heartbeat = self._start_heartbeat(event.event_id, stop_event)
             try:
@@ -126,9 +143,9 @@ class ExecutionOutboxDispatcher:
 
         self.metrics.delivered += delivered
         self.metrics.retried += retried
-        self.metrics.selected += len(events)
+        self.metrics.selected += len(claimed_events)
         self.metrics.claim_lost += claim_lost
-        return {"delivered": delivered, "retried": retried, "selected": len(events)}
+        return {"delivered": delivered, "retried": retried, "selected": len(claimed_events)}
 
     def snapshot(self) -> dict[str, int]:
         return {
