@@ -85,3 +85,64 @@ def test_execution_event_survives_new_session():
         assert pending[0].aggregate_id == "O-RESTART"
         assert pending[0].status == "PENDING"
         assert isinstance(pending[0], ExecutionOutboxModel)
+
+
+def test_processed_event_is_not_redelivered_after_restart():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        event = repository.enqueue(
+            "ORDER_EXECUTED",
+            "O-PROCESSED",
+            {"order_id": "O-PROCESSED"},
+            event_id="execution-O-PROCESSED",
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        processed = repository.mark_processed(event.event_id)
+        session.commit()
+        assert processed.status == "PROCESSED"
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        assert repository.pending() == []
+        counts = repository.status_counts()
+        assert counts["processed"] == 1
+        assert counts["pending"] == 0
+        assert counts["claimed"] == 0
+        assert counts["expired"] == 0
+
+
+def test_retry_event_is_replayable_after_restart_without_resetting_attempt_count():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        event = repository.enqueue(
+            "ORDER_EXECUTED",
+            "O-REPLAY",
+            {"order_id": "O-REPLAY", "volume": 1},
+            event_id="execution-O-REPLAY",
+        )
+        session.commit()
+
+        repository.mark_retry(event.event_id)
+        session.commit()
+        assert event.attempts == 1
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        pending = repository.pending()
+        assert len(pending) == 1
+        assert pending[0].attempts == 1
+
+        repository.mark_processed(pending[0].event_id)
+        session.commit()
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        assert repository.pending() == []
+        assert repository.status_counts()["processed"] == 1
