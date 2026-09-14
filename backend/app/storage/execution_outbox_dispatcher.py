@@ -124,7 +124,9 @@ class ExecutionOutboxDispatcher:
             stop_event = threading.Event()
             heartbeat = self._start_heartbeat(event.event_id, stop_event)
             try:
-                self.handler(event.event_type, event.aggregate_id, json.loads(event.payload))
+                payload = json.loads(event.payload)
+                payload["_event_id"] = event.event_id
+                self.handler(event.event_type, event.aggregate_id, payload)
             except Exception:
                 retry_marked = self._finalize(event.event_id, retry=True)
                 if retry_marked:
