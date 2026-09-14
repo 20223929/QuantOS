@@ -2,6 +2,7 @@ import time
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.storage.execution_outbox import ExecutionOutboxRepository
 from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
@@ -9,7 +10,11 @@ from app.storage.models.base import Base
 
 
 def _new_session_factory():
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
