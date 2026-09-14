@@ -37,13 +37,28 @@ class TqSdkBroker:
         order.broker_order = vendor_order
         return {"id": order_id, "status": status, "vendor_order": vendor_order, **kwargs}
 
+    def get_order(self, order_id: str) -> dict:
+        api = self._require_api()
+        vendor_order = api.get_order(order_id)
+        return {
+            "id": order_id,
+            "status": str(getattr(vendor_order, "status", "UNKNOWN")),
+            "volume_original": int(getattr(vendor_order, "volume_orign", 0) or 0),
+            "volume_left": int(getattr(vendor_order, "volume_left", 0) or 0),
+            "volume_filled": int(getattr(vendor_order, "volume_orign", 0) or 0) - int(getattr(vendor_order, "volume_left", 0) or 0),
+            "price": float(getattr(vendor_order, "limit_price", 0) or 0),
+            "vendor_order": vendor_order,
+        }
+
     def cancel_order(self, order: Any | str) -> dict:
         api = self._require_api()
         vendor_order = getattr(order, "broker_order", None)
         if vendor_order is None and not isinstance(order, str):
             vendor_order = order
+        if vendor_order is None and isinstance(order, str):
+            vendor_order = api.get_order(order)
         if vendor_order is None:
-            raise ValueError("cancel_order requires the vendor order object")
+            raise ValueError("cancel_order requires an order id or vendor order object")
         api.cancel_order(vendor_order)
         return {"id": str(getattr(vendor_order, "order_id", getattr(vendor_order, "id", ""))), "status": "CANCEL_REQUESTED"}
 
