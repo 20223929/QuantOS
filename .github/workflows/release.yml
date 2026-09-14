@@ -1,0 +1,74 @@
+name: QuantOS Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-validation:
+    name: Release Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        run: |
+          test "${GITHUB_REF_TYPE}" = "tag"
+          printf '%s\n' "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+      - name: Validate release commit ancestry
+        run: |
+          git merge-base --is-ancestor "${GITHUB_SHA}" HEAD
+
+      - name: Validate source version
+        run: |
+          version=$(node -p "require('./frontend/package.json').version")
+          expected="${GITHUB_REF_NAME#v}"
+          test "$version" = "$expected"
+
+      - name: Validate release metadata
+        run: |
+          test -f backend/alembic.ini
+          grep -Fxq 'script_location = app/storage/migrations' backend/alembic.ini
+          test -d backend/app/storage/migrations/versions
+          test -f frontend/package.json
+
+      - name: Create release manifest
+        run: |
+          version=$(node -p "require('./frontend/package.json').version")
+          cat > release-manifest.txt <<EOF
+QuantOS release manifest
+version=$version
+tag=${GITHUB_REF_NAME}
+commit=${GITHUB_SHA}
+workflow=${GITHUB_WORKFLOW}
+run_id=${GITHUB_RUN_ID}
+EOF
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: quantos-release-${{ github.ref_name }}
+          path: release-manifest.txt
+          if-no-files-found: error
+
+  release-gate:
+    name: Release Gate
+    runs-on: ubuntu-latest
+    needs: release-validation
+    if: ${{ always() }}
+
+    steps:
+      - name: Verify release validation
+        run: test "${{ needs.release-validation.result }}" = "success"
+
+      - name: Release approved
+        run: echo "QuantOS release ${GITHUB_REF_NAME} approved"
