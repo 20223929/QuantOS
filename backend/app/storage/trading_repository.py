@@ -12,6 +12,8 @@ _STATUS_ALIASES = {
     "SUCCESS": "FILLED",
     "ALIVE": "SUBMITTED",
     "PENDING": "SUBMITTED",
+    "PARTIAL_FILLED": "PARTIALLY_FILLED",
+    "PARTIALLYFILLED": "PARTIALLY_FILLED",
 }
 
 
@@ -69,6 +71,20 @@ class TradingRepository:
     def get_order(self, order_id: str):
         return self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
 
+    def order_filled_volume(self, order_id: int | str) -> float:
+        internal_order_id = order_id
+        if not isinstance(order_id, int):
+            record = self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
+            if record is None:
+                return 0.0
+            internal_order_id = record.id
+        value = self.session.scalar(
+            select(func.coalesce(func.sum(TradeModel.volume), 0.0)).where(
+                TradeModel.order_id == internal_order_id
+            )
+        )
+        return float(value or 0.0)
+
     def save_trade(self, trade):
         trade_id = str(trade.get("trade_id") or trade.get("id") or uuid4())
         with self.session.no_autoflush:
@@ -110,15 +126,11 @@ class TradingRepository:
         if record.order_id is not None:
             order = self.session.get(OrderModel, record.order_id)
             if order is not None:
-                filled_volume = self.session.scalar(
-                    select(func.coalesce(func.sum(TradeModel.volume), 0.0)).where(
-                        TradeModel.order_id == order.id
-                    )
-                )
+                filled_volume = self.order_filled_volume(order.id)
                 requested = float(order.volume)
                 if filled_volume >= requested:
                     order.status = "FILLED"
-                elif filled_volume > 0:
+                elif filled_volume > 0 and order.status not in {"CANCELLED", "REJECTED"}:
                     order.status = "PARTIALLY_FILLED"
                 self.session.flush()
         return record
