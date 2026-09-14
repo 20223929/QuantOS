@@ -121,10 +121,12 @@ async def submit_order(payload: dict):
         offset=offset,
         order_id=f"order-{uuid4().hex}",
     )
+    runtime_snapshot = execution_engine.snapshot_runtime_state()
     result = execution_engine.execute(order)
     try:
         persist_execution(order)
     except Exception as exc:
+        execution_engine.restore_runtime_state(runtime_snapshot)
         raise HTTPException(status_code=500, detail=f"failed to persist execution: {exc}") from exc
     return {"success": result.success, "message": result.message, "order": serialize_order(order)}
 
