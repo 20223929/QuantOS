@@ -91,12 +91,58 @@ jobs:
           path: frontend/dist
           if-no-files-found: error
 
+  release-artifacts:
+    name: Release Artifact Dry-Run
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create source archive and checksum
+        run: |
+          version=$(node -p "require('./frontend/package.json').version")
+          archive="QuantOS-${version}-source.tar.gz"
+          git archive --format=tar.gz --output="$archive" "$GITHUB_SHA"
+          sha256sum "$archive" > SHA256SUMS
+          test -s "$archive"
+          test -s SHA256SUMS
+          test "$(awk '{print $2}' SHA256SUMS)" = "$archive"
+          sha256sum -c SHA256SUMS
+
+      - name: Create and verify release manifest
+        run: |
+          version=$(node -p "require('./frontend/package.json').version")
+          printf '%s\n' \
+            'QuantOS release manifest' \
+            "version=$version" \
+            "ref=${GITHUB_REF_NAME}" \
+            "commit=${GITHUB_SHA}" \
+            "workflow=${GITHUB_WORKFLOW}" \
+            "run_id=${GITHUB_RUN_ID}" > release-manifest.txt
+          test -s release-manifest.txt
+          grep -Fxq "version=$version" release-manifest.txt
+          grep -Fxq "commit=${GITHUB_SHA}" release-manifest.txt
+          grep -Fxq "ref=${GITHUB_REF_NAME}" release-manifest.txt
+
+      - name: Upload release dry-run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quantos-release-dry-run-${{ github.sha }}
+          path: |
+            release-manifest.txt
+            QuantOS-*-source.tar.gz
+            SHA256SUMS
+          if-no-files-found: error
+
   quality-gate:
     name: Release Quality Gate
     runs-on: ubuntu-latest
     needs:
       - backend
       - frontend
+      - release-artifacts
     if: ${{ always() }}
 
     steps:
@@ -104,6 +150,7 @@ jobs:
         run: |
           test "${{ needs.backend.result }}" = "success"
           test "${{ needs.frontend.result }}" = "success"
+          test "${{ needs.release-artifacts.result }}" = "success"
 
       - name: Release gate passed
         run: echo "QuantOS release quality gate passed"
