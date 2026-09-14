@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.storage.models.trading import MarketDataModel, OrderModel, PositionModel, TradeModel
 
@@ -69,37 +69,53 @@ class TradingRepository:
 
     def save_trade(self, trade):
         trade_id = str(trade.get("trade_id") or trade.get("id") or uuid4())
-        record = self.session.scalar(select(TradeModel).where(TradeModel.trade_id == trade_id))
+        with self.session.no_autoflush:
+            record = self.session.scalar(select(TradeModel).where(TradeModel.trade_id == trade_id))
+            raw_order_id = trade.get("order_id")
+            internal_order_id = None
+            if isinstance(raw_order_id, int):
+                internal_order_id = raw_order_id
+            elif raw_order_id is not None:
+                raw_order_id_str = str(raw_order_id)
+                linked_order = self.session.scalar(
+                    select(OrderModel).where(OrderModel.order_id == raw_order_id_str)
+                )
+                internal_order_id = linked_order.id if linked_order is not None else (
+                    int(raw_order_id_str) if raw_order_id_str.isdigit() else None
+                )
 
-        raw_order_id = trade.get("order_id")
-        internal_order_id = None
-        if isinstance(raw_order_id, int):
-            internal_order_id = raw_order_id
-        elif raw_order_id is not None:
-            raw_order_id_str = str(raw_order_id)
-            linked_order = self.session.scalar(select(OrderModel).where(OrderModel.order_id == raw_order_id_str))
-            internal_order_id = linked_order.id if linked_order is not None else (
-                int(raw_order_id_str) if raw_order_id_str.isdigit() else None
-            )
+            if record is None:
+                record = TradeModel(trade_id=trade_id, created_at=datetime.now(UTC))
+                self.session.add(record)
 
-        if record is None:
-            record = TradeModel(
-                trade_id=trade_id,
-                order_id=internal_order_id,
-                symbol=trade["symbol"],
-                side=str(trade["side"]).upper(),
-                price=float(trade["price"]),
-                volume=float(trade["volume"]),
-                created_at=datetime.now(UTC),
-            )
-            self.session.add(record)
-        else:
             record.order_id = internal_order_id
-            record.symbol = trade["symbol"]
+            record.symbol = str(trade["symbol"])
             record.side = str(trade["side"]).upper()
             record.price = float(trade["price"])
             record.volume = float(trade["volume"])
         self.session.flush()
+        return record
+
+    def apply_trade(self, trade):
+        """Persist a trade and derive the linked order lifecycle state."""
+        trade_id = str(trade.get("trade_id") or trade.get("id") or "")
+        before = self.session.scalar(select(TradeModel).where(TradeModel.trade_id == trade_id))
+        record = self.save_trade(trade)
+
+        if before is None and record.order_id is not None:
+            order = self.session.get(OrderModel, record.order_id)
+            if order is not None:
+                filled_volume = self.session.scalar(
+                    select(func.coalesce(func.sum(TradeModel.volume), 0.0)).where(
+                        TradeModel.order_id == order.id
+                    )
+                )
+                requested = float(order.volume)
+                if filled_volume >= requested:
+                    order.status = "FILLED"
+                elif filled_volume > 0:
+                    order.status = "PARTIALLY_FILLED"
+                self.session.flush()
         return record
 
     def upsert_position(self, symbol: str, volume: float):
@@ -112,6 +128,17 @@ class TradingRepository:
             record.updated_at = datetime.now(UTC)
         self.session.flush()
         return record
+
+    def recover_positions_from_trades(self):
+        """Rebuild net positions from committed trades for process restart recovery."""
+        trades = self.list_trades()
+        net: dict[str, float] = {}
+        for trade in trades:
+            multiplier = 1.0 if trade.side.upper() in {"BUY", "LONG"} else -1.0
+            net[trade.symbol] = net.get(trade.symbol, 0.0) + multiplier * float(trade.volume)
+        for symbol, volume in net.items():
+            self.upsert_position(symbol, volume)
+        return net
 
     def save_market_tick(self, symbol: str, price: float, timestamp=None):
         record = MarketDataModel(
@@ -133,5 +160,10 @@ class TradingRepository:
         return list(self.session.scalars(select(PositionModel).order_by(PositionModel.symbol)))
 
     def list_market_data(self, symbol: str, limit: int = 200):
-        statement = select(MarketDataModel).where(MarketDataModel.symbol == symbol).order_by(MarketDataModel.id.desc()).limit(limit)
+        statement = (
+            select(MarketDataModel)
+            .where(MarketDataModel.symbol == symbol)
+            .order_by(MarketDataModel.id.desc())
+            .limit(limit)
+        )
         return list(self.session.scalars(statement))
