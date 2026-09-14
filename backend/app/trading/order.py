@@ -12,3 +12,4 @@ class Order:
     order_id: str | None = None
     broker_order: object | None = None
     reason: str = ""
+    filled_volume: float = 0.0
