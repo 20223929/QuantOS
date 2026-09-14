@@ -43,28 +43,44 @@ class DurableExecutionEventSink:
             )
             session.commit()
 
-        self._events.append(
-            {
-                "event_type": event_type,
-                "aggregate_id": aggregate_id,
-                "payload": json.loads(json.dumps(stored_payload, ensure_ascii=False)),
-            }
-        )
+        self._events.append(self._serialize_event(event_id, event_type, aggregate_id, stored_payload))
         if len(self._events) > self.max_events:
             del self._events[: len(self._events) - self.max_events]
+
+    @staticmethod
+    def _serialize_event(event_id: str, event_type: str, aggregate_id: str, payload: dict) -> dict:
+        return {
+            "event_id": event_id,
+            "event_type": event_type,
+            "aggregate_id": aggregate_id,
+            "payload": json.loads(json.dumps(payload, ensure_ascii=False)),
+        }
 
     def snapshot(self) -> list[dict]:
         return deepcopy(self._events)
 
-    def durable_snapshot(self) -> list[dict]:
+    def durable_snapshot(
+        self,
+        *,
+        event_type: str | None = None,
+        aggregate_id: str | None = None,
+        event_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        effective_limit = self.max_events if limit is None else limit
         with self.session_factory() as session:
-            rows = ExecutionEventProjectionRepository(session).list_all()
+            rows = ExecutionEventProjectionRepository(session).list_events(
+                event_type=event_type,
+                aggregate_id=aggregate_id,
+                event_id=event_id,
+                limit=effective_limit,
+            )
             return [
-                {
-                    "event_id": row.event_id,
-                    "event_type": row.event_type,
-                    "aggregate_id": row.aggregate_id,
-                    "payload": json.loads(row.payload),
-                }
-                for row in rows[-self.max_events :]
+                self._serialize_event(
+                    row.event_id,
+                    row.event_type,
+                    row.aggregate_id,
+                    json.loads(row.payload),
+                )
+                for row in rows
             ]
