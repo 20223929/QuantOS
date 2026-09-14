@@ -1,3 +1,5 @@
+import time
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -94,3 +96,26 @@ def test_dispatcher_recovers_pending_event_on_next_run():
     with session_factory() as session:
         repository = ExecutionOutboxRepository(session)
         assert repository.pending() == []
+
+
+def test_dispatcher_renews_long_running_claim_and_reports_metric():
+    session_factory = _new_session_factory()
+    with session_factory() as session:
+        repository = ExecutionOutboxRepository(session)
+        repository.enqueue("ORDER_EXECUTED", "O-SLOW", {}, event_id="dispatch-slow")
+        session.commit()
+
+    def slow_handler(event_type, aggregate_id, payload):
+        time.sleep(1.2)
+
+    dispatcher = ExecutionOutboxDispatcher(
+        session_factory,
+        slow_handler,
+        claim_seconds=1,
+        heartbeat_seconds=0.2,
+    )
+    result = dispatcher.dispatch_once()
+
+    assert result["delivered"] == 1
+    assert dispatcher.snapshot()["claim_renewed"] >= 1
+    assert dispatcher.snapshot()["claim_lost"] == 0
