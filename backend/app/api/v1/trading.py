@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app.broker.paper_broker import PaperBroker
 from app.risk.controller import RiskController
 from app.risk.limit import RiskLimit
+from app.storage.execution_outbox import ExecutionOutboxRepository
 from app.storage.orm import ORMManager
 from app.storage.trading_repository import TradingRepository
 from app.trading.execution_engine import TradingExecutionEngine
@@ -79,21 +80,34 @@ def serialize_order_record(record) -> dict:
 def persist_execution(order: Order) -> None:
     with _orm.session() as session:
         repository = TradingRepository(session)
+        outbox = ExecutionOutboxRepository(session)
         try:
             record = repository.save_order(order)
             if order.status == "FILLED":
-                repository.apply_trade(
-                    {
-                        "trade_id": f"trade-{order.order_id}",
-                        "order_id": record.id,
-                        "symbol": order.symbol,
-                        "side": order.side,
-                        "price": order.price,
-                        "volume": order.volume,
-                    }
-                )
+                trade = {
+                    "trade_id": f"trade-{order.order_id}",
+                    "order_id": record.id,
+                    "symbol": order.symbol,
+                    "side": order.side,
+                    "price": order.price,
+                    "volume": order.volume,
+                }
+                repository.apply_trade(trade)
                 position = execution_engine.positions[order.symbol]
                 repository.upsert_position(order.symbol, position.volume)
+                outbox.enqueue(
+                    event_type="ORDER_EXECUTED",
+                    aggregate_id=order.order_id,
+                    event_id=f"order-executed:{order.order_id}",
+                    payload={
+                        "order": serialize_order(order),
+                        "trade": trade,
+                        "position": {
+                            "symbol": order.symbol,
+                            "volume": position.volume,
+                        },
+                    },
+                )
             session.commit()
         except Exception:
             session.rollback()
