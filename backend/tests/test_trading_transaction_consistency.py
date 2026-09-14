@@ -107,6 +107,28 @@ def test_duplicate_trade_callback_does_not_change_filled_volume_or_status():
         assert session.scalar(select(func.sum(TradeModel.volume))) == 5
 
 
+def test_duplicate_trade_callback_keeps_original_payload():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        repository.save_order(Order(order_id="O-DUP-PAYLOAD", volume=5))
+        session.commit()
+
+        first = repository.apply_trade(_trade("T-DUP-PAYLOAD", "O-DUP-PAYLOAD", 5))
+        session.commit()
+
+        conflicting = _trade("T-DUP-PAYLOAD", "O-DUP-PAYLOAD", 1)
+        second = repository.apply_trade(conflicting)
+        session.commit()
+
+        assert second.id == first.id
+        assert second.volume == 5
+        assert repository.get_order("O-DUP-PAYLOAD").status == "FILLED"
+        assert session.scalar(select(func.count(TradeModel.id))) == 1
+        assert session.scalar(select(func.sum(TradeModel.volume))) == 5
+
+
 def test_restart_recovery_rebuilds_position_from_committed_trades():
     engine = _new_engine()
 
