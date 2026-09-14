@@ -33,7 +33,8 @@ def _load_persisted_trading_state() -> None:
     with _orm.session() as session:
         repository = TradingRepository(session)
         recovered = repository.recover_positions_from_trades()
-        if recovered:
+        reconciled_orders = repository.reconcile_order_states_from_trades()
+        if recovered or reconciled_orders:
             session.commit()
         fill_cache: dict[str, float] = {}
         for record in repository.list_orders():
@@ -55,7 +56,7 @@ def serialize_order(order: dict | Order) -> dict:
 
 
 def serialize_order_record(record, filled_volume: float | None = None) -> dict:
-    return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": record.reason, "filled_volume": record._filled_volume if hasattr(record, "_filled_volume") else (filled_volume or 0.0)}
+    return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": record.reason, "filled_volume": float(filled_volume or 0.0)}
 
 
 def persist_execution(order: Order) -> None:
