@@ -57,12 +57,37 @@ def persist_execution(order: Order) -> None:
         outbox = ExecutionOutboxRepository(session)
         try:
             record = repository.save_order(order)
-            if order.status == "FILLED":
-                trade = {"trade_id": f"trade-{order.order_id}", "order_id": record.id, "symbol": order.symbol, "side": order.side, "price": order.price, "volume": order.volume}
-                repository.apply_trade(trade)
-                position = execution_engine.positions[order.symbol]
-                repository.upsert_position(order.symbol, position.volume)
-                outbox.enqueue(event_type="ORDER_EXECUTED", aggregate_id=order.order_id, event_id=f"order-executed:{order.order_id}", payload={"order": serialize_order(order), "trade": trade, "position": {"symbol": order.symbol, "volume": position.volume}})
+            status = str(order.status).upper()
+            cumulative = float(getattr(order, "filled_volume", 0) or 0)
+            if status == "FILLED" and cumulative <= 0:
+                cumulative = float(order.volume)
+                order.filled_volume = cumulative
+
+            if status in {"PARTIALLY_FILLED", "FILLED"} and cumulative > 0:
+                persisted = repository.order_filled_volume(record.id)
+                delta = cumulative - persisted
+                if delta > 0:
+                    trade = {
+                        "trade_id": f"trade-{order.order_id}-{cumulative:g}",
+                        "order_id": record.id,
+                        "symbol": order.symbol,
+                        "side": order.side,
+                        "price": order.price,
+                        "volume": delta,
+                    }
+                    repository.apply_trade(trade)
+                    position = execution_engine.positions.get(order.symbol, Position(symbol=order.symbol))
+                    repository.upsert_position(order.symbol, position.volume)
+                    outbox.enqueue(
+                        event_type="ORDER_EXECUTED",
+                        aggregate_id=order.order_id,
+                        event_id=f"order-executed:{order.order_id}:{cumulative:g}",
+                        payload={
+                            "order": serialize_order(order),
+                            "trade": trade,
+                            "position": {"symbol": order.symbol, "volume": position.volume},
+                        },
+                    )
             session.commit()
         except Exception:
             session.rollback()
