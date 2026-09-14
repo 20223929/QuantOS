@@ -39,16 +39,17 @@ jobs:
           grep -Fxq 'script_location = app/storage/migrations' alembic.ini
           grep -Fxq 'sqlalchemy.url = sqlite:///./quantos.db' alembic.ini
 
-      - name: Validate database migration
+      - name: Validate database migration state
         run: |
           cd backend
           alembic -c alembic.ini upgrade head
-          current=$(alembic -c alembic.ini current)
-          heads=$(alembic -c alembic.ini heads)
-          printf '%s\n' "$current"
-          printf '%s\n' "$heads"
-          printf '%s\n' "$current" | grep -q '0005_order_reason'
-          printf '%s\n' "$heads" | grep -q '0005_order_reason'
+          current=$(alembic -c alembic.ini current | awk 'NF {print $1}' | tail -n 1)
+          heads=$(alembic -c alembic.ini heads | awk 'NF {print $1}' | tail -n 1)
+          printf 'current=%s\n' "$current"
+          printf 'head=%s\n' "$heads"
+          test -n "$current"
+          test -n "$heads"
+          test "$current" = "$heads"
 
       - name: Run backend tests
         run: |
