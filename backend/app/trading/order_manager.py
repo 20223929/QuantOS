@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.risk.controller import RiskController
+from app.risk.limit import RiskLimit
 from app.trading.execution_engine import TradingExecutionEngine
 from app.trading.order import Order
 
@@ -7,7 +9,11 @@ from app.trading.order import Order
 class OrderManager:
     """Coordinate order creation, risk validation and broker execution."""
 
-    def __init__(self, broker, risk_controller):
+    def __init__(self, broker, risk_controller=None):
+        # Keep the historical one-argument constructor compatible while allowing
+        # production callers to inject the platform risk controller explicitly.
+        if risk_controller is None:
+            risk_controller = RiskController(RiskLimit())
         self.execution_engine = TradingExecutionEngine(broker, risk_controller)
         self.orders: dict[str, Order] = {}
 
@@ -22,10 +28,12 @@ class OrderManager:
         return result
 
     def cancel(self, order: Order):
-        broker_order = order.broker_order or order.order_id
+        broker_order = order.broker_order or order.order_id or order
         result = self.execution_engine.broker.cancel_order(broker_order)
         if isinstance(result, dict):
             order.status = str(result.get("status", order.status)).upper()
+        elif result is not None:
+            order.status = str(getattr(result, "status", order.status)).upper()
         return result
 
     def get(self, order_id: str):
