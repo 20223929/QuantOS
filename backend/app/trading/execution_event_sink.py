@@ -22,7 +22,7 @@ class ExecutionEventSink:
         if not aggregate_id:
             raise ValueError("aggregate_id is required")
 
-        event_id = str(payload.get("_event_id", "") or "")
+        event_id = str(payload.get("_event_id", "") or payload.get("event_id", "") or "")
         key = (event_type, event_id) if event_id else (event_type, str(aggregate_id))
         if key in self._event_keys:
             return
