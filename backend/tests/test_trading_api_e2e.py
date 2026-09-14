@@ -7,9 +7,12 @@ import pytest
 from sqlalchemy import func, select
 
 import app.api.v1.trading as trading_api
+from app.storage.execution_outbox import ExecutionOutboxRepository
+from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
 from app.storage.models.outbox import ExecutionOutboxModel
 from app.storage.models.trading import OrderModel, PositionModel, TradeModel
 from app.storage.orm import ORMManager
+from app.trading.execution_event_sink import ExecutionEventSink
 from app.trading.position import Position
 
 
@@ -36,6 +39,9 @@ def isolated_trading(monkeypatch, tmp_path):
     engine = _ExecutionEngine()
     monkeypatch.setattr(trading_api, "_orm", orm)
     monkeypatch.setattr(trading_api, "execution_engine", engine)
+    monkeypatch.setattr(trading_api, "execution_event_sink", ExecutionEventSink())
+    dispatcher = ExecutionOutboxDispatcher(orm.session, trading_api.execution_event_sink.handle)
+    monkeypatch.setattr(trading_api, "execution_outbox_dispatcher", dispatcher)
     return orm, engine
 
 
@@ -100,7 +106,7 @@ def test_invalid_order_request_is_rejected_before_execution(isolated_trading):
         assert session.scalar(select(func.count(OrderModel.id))) == 0
 
 
-def test_outbox_status_reflects_pending_then_processed(isolated_trading, monkeypatch):
+def test_outbox_status_reflects_pending_then_processed(isolated_trading):
     orm, _ = isolated_trading
 
     async def submit():
@@ -110,11 +116,6 @@ def test_outbox_status_reflects_pending_then_processed(isolated_trading, monkeyp
 
     response = asyncio.run(submit())
     assert response["success"] is True
-
-    sink_events = []
-    monkeypatch.setattr(trading_api.execution_event_sink, "handle", lambda *args: sink_events.append(args))
-    dispatcher = trading_api.ExecutionOutboxDispatcher(orm.session, trading_api.execution_event_sink.handle)
-    monkeypatch.setattr(trading_api, "execution_outbox_dispatcher", dispatcher)
 
     async def status_and_dispatch():
         pending = await trading_api.execution_outbox_status()
@@ -126,10 +127,15 @@ def test_outbox_status_reflects_pending_then_processed(isolated_trading, monkeyp
     assert pending["pending"] == 1
     assert pending["processed"] == 0
     assert dispatched == {"delivered": 1, "retried": 0, "selected": 1}
-    assert len(sink_events) == 1
     assert final["pending"] == 0
     assert final["processed"] == 1
     assert final["sink_events"] == 1
+
+    with orm.session() as session:
+        repository = ExecutionOutboxRepository(session)
+        event = session.scalar(select(ExecutionOutboxModel))
+        assert event.status == "PROCESSED"
+        assert repository.pending() == []
 
 
 def test_get_order_and_list_positions_match_persisted_state(isolated_trading):
