@@ -19,6 +19,7 @@ class OrderModel(Base):
     volume: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     offset: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
