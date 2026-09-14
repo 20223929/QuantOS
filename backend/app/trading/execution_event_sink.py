@@ -14,6 +14,7 @@ class ExecutionEventSink:
         self.max_events = max_events
         self._events: list[dict] = []
         self._event_keys: set[tuple[str, str]] = set()
+        self._stored_keys: list[tuple[str, str]] = []
 
     def handle(self, event_type: str, aggregate_id: str, payload: dict) -> None:
         if event_type not in self.SUPPORTED_EVENT_TYPES:
@@ -36,18 +37,13 @@ class ExecutionEventSink:
             }
         )
         self._event_keys.add(key)
+        self._stored_keys.append(key)
         if len(self._events) > self.max_events:
-            removed = self._events[:-self.max_events]
-            del self._events[:-self.max_events]
-            self._event_keys.difference_update(
-                (
-                    item["event_type"],
-                    str(item["payload"].get("_event_id", ""))
-                    if item["payload"].get("_event_id")
-                    else str(item["aggregate_id"]),
-                )
-                for item in removed
-            )
+            removed_count = len(self._events) - self.max_events
+            del self._events[:removed_count]
+            removed_keys = self._stored_keys[:removed_count]
+            del self._stored_keys[:removed_count]
+            self._event_keys.difference_update(removed_keys)
 
     def snapshot(self) -> list[dict]:
         return deepcopy(self._events)
