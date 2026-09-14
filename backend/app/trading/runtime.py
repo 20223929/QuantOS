@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any
+from typing import Any, Callable
 
 from app.trading.order import Order
 
@@ -10,13 +10,23 @@ from app.trading.order import Order
 class StrategyRuntime:
     """Drive a strategy from market bars into the trading execution engine."""
 
-    def __init__(self, market_adapter, strategy, execution_engine, symbol: str, duration_seconds: int = 60, data_length: int = 200):
+    def __init__(
+        self,
+        market_adapter,
+        strategy,
+        execution_engine,
+        symbol: str,
+        duration_seconds: int = 60,
+        data_length: int = 200,
+        persist_execution: Callable[[Order], None] | None = None,
+    ):
         self.market_adapter = market_adapter
         self.strategy = strategy
         self.execution_engine = execution_engine
         self.symbol = symbol
         self.duration_seconds = duration_seconds
         self.data_length = data_length
+        self.persist_execution = persist_execution
         self.running = False
         self.task: asyncio.Task | None = None
         self.last_bar_datetime: Any = None
@@ -65,7 +75,10 @@ class StrategyRuntime:
                 action = str(getattr(signal, "action", "")).upper()
                 price = float(getattr(signal, "price", payload.get("close", 0) if isinstance(payload, dict) else 0))
                 order = Order(symbol=self.symbol, side=action, volume=1, price=price, offset="OPEN")
-                self.last_signal = self.execution_engine.execute(order)
+                result = self.execution_engine.execute(order)
+                self.last_signal = result
+                if self.persist_execution is not None:
+                    self.persist_execution(order)
 
             await asyncio.to_thread(self.market_adapter.api.wait_update)
 
