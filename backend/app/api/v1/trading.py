@@ -23,10 +23,12 @@ _orm = ORMManager(f"sqlite:///{_DB_PATH}")
 _orm.create_tables()
 
 
-
 def _load_persisted_positions() -> None:
     with _orm.session() as session:
         repository = TradingRepository(session)
+        recovered = repository.recover_positions_from_trades()
+        if recovered:
+            session.commit()
         for record in repository.list_positions():
             execution_engine.positions[record.symbol] = Position(
                 symbol=record.symbol,
@@ -77,21 +79,25 @@ def serialize_order_record(record) -> dict:
 def persist_execution(order: Order) -> None:
     with _orm.session() as session:
         repository = TradingRepository(session)
-        record = repository.save_order(order)
-        if order.status == "FILLED":
-            repository.save_trade(
-                {
-                    "trade_id": f"trade-{order.order_id}",
-                    "order_id": record.id,
-                    "symbol": order.symbol,
-                    "side": order.side,
-                    "price": order.price,
-                    "volume": order.volume,
-                }
-            )
-            position = execution_engine.positions[order.symbol]
-            repository.upsert_position(order.symbol, position.volume)
-        session.commit()
+        try:
+            record = repository.save_order(order)
+            if order.status == "FILLED":
+                repository.apply_trade(
+                    {
+                        "trade_id": f"trade-{order.order_id}",
+                        "order_id": record.id,
+                        "symbol": order.symbol,
+                        "side": order.side,
+                        "price": order.price,
+                        "volume": order.volume,
+                    }
+                )
+                position = execution_engine.positions[order.symbol]
+                repository.upsert_position(order.symbol, position.volume)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
 
 
 @router.post("/orders")
@@ -108,7 +114,10 @@ async def submit_order(payload: dict):
 
     order = Order(symbol=symbol, side=side, volume=volume, price=price, offset=offset)
     result = execution_engine.execute(order)
-    persist_execution(order)
+    try:
+        persist_execution(order)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to persist execution: {exc}") from exc
     return {
         "success": result.success,
         "message": result.message,
