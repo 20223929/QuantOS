@@ -48,6 +48,15 @@ jobs:
             "workflow=${GITHUB_WORKFLOW}" \
             "run_id=${GITHUB_RUN_ID}" > release-manifest.txt
 
+      - name: Create source archive and checksum
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="QuantOS-${version}-source.tar.gz"
+          git archive --format=tar.gz --output="$archive" "$GITHUB_REF_NAME"
+          sha256sum "$archive" > SHA256SUMS
+          test -s "$archive"
+          test -s SHA256SUMS
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -74,12 +83,17 @@ jobs:
           fi
 
           gh release upload "$tag" release-manifest.txt --clobber
+          gh release upload "$tag" "QuantOS-${version}-source.tar.gz" --clobber
+          gh release upload "$tag" SHA256SUMS --clobber
 
       - name: Upload release manifest artifact
         uses: actions/upload-artifact@v4
         with:
           name: quantos-release-${{ github.ref_name }}
-          path: release-manifest.txt
+          path: |
+            release-manifest.txt
+            QuantOS-*-source.tar.gz
+            SHA256SUMS
           if-no-files-found: error
 
   release-gate:
