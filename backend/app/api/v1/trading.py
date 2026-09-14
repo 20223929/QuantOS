@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
@@ -111,7 +112,14 @@ async def submit_order(payload: dict):
         raise HTTPException(status_code=400, detail="symbol, side and positive volume are required")
     if offset not in {"OPEN", "CLOSE", "CLOSETODAY", "CLOSEYESTERDAY"}:
         raise HTTPException(status_code=400, detail="unsupported offset")
-    order = Order(symbol=symbol, side=side, volume=volume, price=price, offset=offset)
+    order = Order(
+        symbol=symbol,
+        side=side,
+        volume=volume,
+        price=price,
+        offset=offset,
+        order_id=f"order-{uuid4().hex}",
+    )
     result = execution_engine.execute(order)
     try:
         persist_execution(order)
