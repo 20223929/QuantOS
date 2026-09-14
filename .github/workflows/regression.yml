@@ -43,8 +43,12 @@ jobs:
         run: |
           cd backend
           alembic -c alembic.ini upgrade head
-          alembic -c alembic.ini current | grep -q '0001'
-          alembic -c alembic.ini heads | grep -q '0001'
+          current=$(alembic -c alembic.ini current)
+          heads=$(alembic -c alembic.ini heads)
+          printf '%s\n' "$current"
+          printf '%s\n' "$heads"
+          printf '%s\n' "$current" | grep -q '0002_trading_state'
+          printf '%s\n' "$heads" | grep -q '0002_trading_state'
 
       - name: Run backend tests
         run: |
