@@ -1,5 +1,6 @@
 from pathlib import Path
 from uuid import uuid4
+import json
 
 from fastapi import APIRouter, HTTPException
 
@@ -61,12 +62,12 @@ def serialize_order_record(record, filled_volume: float | None = None) -> dict:
 
 
 def serialize_projection(row) -> dict:
-    return execution_event_sink._serialize_event(
-        row.event_id,
-        row.event_type,
-        row.aggregate_id,
-        __import__("json").loads(row.payload),
-    )
+    return {
+        "event_id": row.event_id,
+        "event_type": row.event_type,
+        "aggregate_id": row.aggregate_id,
+        "payload": json.loads(row.payload),
+    }
 
 
 def persist_execution(order: Order) -> None:
