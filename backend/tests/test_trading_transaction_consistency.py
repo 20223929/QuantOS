@@ -4,8 +4,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.storage.execution_outbox import ExecutionOutboxRepository
 from app.storage.models.base import Base
-from app.storage.models.trading import OrderModel, TradeModel
+from app.storage.models.outbox import ExecutionOutboxModel
+from app.storage.models.trading import OrderModel, PositionModel, TradeModel
 from app.storage.trading_repository import TradingRepository
 
 
@@ -148,3 +150,109 @@ def test_restart_recovery_rebuilds_position_from_committed_trades():
 
         assert recovered["SHFE.rb"] == 2
         assert repository.list_positions()[0].volume == 2
+
+
+def test_restart_recovery_reconciles_order_state_and_fill_cache_from_trade_ledger():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        repository.save_order(Order(order_id="O-REPLAY", volume=10, status="SUBMITTED"))
+        repository.apply_trade(_trade("T-REPLAY-1", "O-REPLAY", 4))
+        session.commit()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        changed = repository.reconcile_order_states_from_trades()
+        session.commit()
+
+        assert changed == 1
+        assert repository.get_order("O-REPLAY").status == "PARTIALLY_FILLED"
+        assert repository.order_filled_volumes() == {"O-REPLAY": 4.0}
+
+        # A replay of the exact callback must remain a no-op after restart.
+        replay = repository.apply_trade(_trade("T-REPLAY-1", "O-REPLAY", 4))
+        session.commit()
+        assert replay.volume == 4
+        assert repository.order_filled_volume("O-REPLAY") == 4
+        assert repository.get_order("O-REPLAY").status == "PARTIALLY_FILLED"
+
+
+def test_cancel_then_late_fill_converges_to_filled_from_authoritative_trade_ledger():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        repository.save_order(Order(order_id="O-RACE", volume=10, status="SUBMITTED"))
+        session.commit()
+
+        repository.update_order_status("O-RACE", "CANCELLED")
+        session.commit()
+        assert repository.get_order("O-RACE").status == "CANCELLED"
+
+        repository.apply_trade(_trade("T-RACE-LATE", "O-RACE", 10))
+        session.commit()
+        assert repository.get_order("O-RACE").status == "FILLED"
+        assert repository.order_filled_volume("O-RACE") == 10
+
+        recovered = repository.recover_positions_from_trades()
+        session.commit()
+        assert recovered["SHFE.rb"] == 10
+        assert repository.list_positions()[0].volume == 10
+
+
+def test_outbox_replay_survives_new_session_and_event_id_deduplication():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        first = repository.enqueue(
+            "ORDER_EXECUTED",
+            "O-OUTBOX-REPLAY",
+            {"order_id": "O-OUTBOX-REPLAY", "volume": 4},
+            event_id="evt-outbox-replay",
+        )
+        session.commit()
+        first_id = first.id
+
+    with Session(engine) as session:
+        repository = ExecutionOutboxRepository(session)
+        pending = repository.pending()
+        assert len(pending) == 1
+        assert pending[0].id == first_id
+
+        duplicate = repository.enqueue(
+            "ORDER_EXECUTED",
+            "O-OUTBOX-REPLAY",
+            {"order_id": "O-OUTBOX-REPLAY", "volume": 999},
+            event_id="evt-outbox-replay",
+        )
+        session.commit()
+
+        assert duplicate.id == first_id
+        assert duplicate.payload == '{"order_id":"O-OUTBOX-REPLAY","volume":4}'
+        assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 1
+
+
+def test_restart_recovery_is_idempotent_when_run_multiple_times():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        repository.save_order(Order(order_id="O-IDEMPOTENT", volume=3))
+        repository.apply_trade(_trade("T-IDEMPOTENT", "O-IDEMPOTENT", 3))
+        repository.upsert_position("SHFE.rb", -100)
+        session.commit()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        first = repository.recover_positions_from_trades()
+        session.commit()
+        second = repository.recover_positions_from_trades()
+        repository.reconcile_order_states_from_trades()
+        session.commit()
+
+        assert first == second == {"SHFE.rb": 3.0}
+        assert repository.list_positions()[0].volume == 3
+        assert repository.get_order("O-IDEMPOTENT").status == "FILLED"
+        assert session.scalar(select(func.count(TradeModel.id))) == 1
