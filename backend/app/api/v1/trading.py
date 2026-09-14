@@ -48,7 +48,7 @@ def serialize_order(order: dict | Order) -> dict:
 
 
 def serialize_order_record(record) -> dict:
-    return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": ""}
+    return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": record.reason}
 
 
 def persist_execution(order: Order) -> None:
@@ -133,7 +133,10 @@ async def cancel_order(order_id: str):
         raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
     with _orm.session() as session:
         repository = TradingRepository(session)
-        repository.update_order_status(order_id, status)
+        updated = repository.update_order_status(order_id, status)
+        if updated is None:
+            session.rollback()
+            raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
         session.commit()
     return {"success": True, "order": serialize_order(result)}
 
