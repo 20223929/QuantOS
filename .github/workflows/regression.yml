@@ -28,6 +28,12 @@ jobs:
           cd backend
           pip install -e ".[dev]"
 
+      - name: Validate database migration
+        run: |
+          cd backend
+          alembic upgrade head
+          alembic current
+
       - name: Run backend tests
         run: |
           cd backend
