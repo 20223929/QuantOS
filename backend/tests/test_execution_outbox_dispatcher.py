@@ -1,3 +1,4 @@
+import threading
 import time
 
 from sqlalchemy import create_engine
@@ -14,6 +15,15 @@ def _new_session_factory():
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+
+def _new_file_session_factory(path):
+    engine = create_engine(
+        f"sqlite:///{path}",
+        connect_args={"check_same_thread": False},
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -124,3 +134,97 @@ def test_dispatcher_renews_long_running_claim_and_reports_metric():
     assert result["delivered"] == 1
     assert dispatcher.snapshot()["claim_renewed"] >= 1
     assert dispatcher.snapshot()["claim_lost"] == 0
+
+
+def test_dispatcher_commits_claim_before_running_handler(tmp_path):
+    db_path = tmp_path / "shared-outbox.db"
+    session_factory_a = _new_file_session_factory(db_path)
+    session_factory_b = _new_file_session_factory(db_path)
+
+    with session_factory_a() as session:
+        repository = ExecutionOutboxRepository(session)
+        repository.enqueue("ORDER_EXECUTED", "O-CONCURRENT", {}, event_id="dispatch-concurrent")
+        session.commit()
+
+    handler_started = threading.Event()
+    release_handler = threading.Event()
+    received = []
+
+    def slow_handler(event_type, aggregate_id, payload):
+        handler_started.set()
+        release_handler.wait(timeout=5)
+        received.append(aggregate_id)
+
+    dispatcher_a = ExecutionOutboxDispatcher(
+        session_factory_a,
+        slow_handler,
+        claim_seconds=5,
+        heartbeat_seconds=1,
+    )
+    dispatcher_b = ExecutionOutboxDispatcher(
+        session_factory_b,
+        lambda event_type, aggregate_id, payload: received.append(f"duplicate:{aggregate_id}"),
+        claim_seconds=5,
+        heartbeat_seconds=1,
+    )
+
+    result_a = {}
+
+    def run_a():
+        result_a.update(dispatcher_a.dispatch_once())
+
+    worker = threading.Thread(target=run_a)
+    worker.start()
+    assert handler_started.wait(timeout=5)
+
+    result_b = dispatcher_b.dispatch_once()
+    assert result_b == {"delivered": 0, "retried": 0, "selected": 0}
+
+    release_handler.set()
+    worker.join(timeout=5)
+
+    assert result_a == {"delivered": 1, "retried": 0, "selected": 1}
+    assert received == ["O-CONCURRENT"]
+
+    with session_factory_a() as session:
+        repository = ExecutionOutboxRepository(session)
+        assert repository.pending() == []
+
+
+def test_dispatcher_reclaims_expired_claim_from_previous_instance(tmp_path):
+    db_path = tmp_path / "recovery-outbox.db"
+    session_factory_a = _new_file_session_factory(db_path)
+    session_factory_b = _new_file_session_factory(db_path)
+
+    with session_factory_a() as session:
+        repository = ExecutionOutboxRepository(session)
+        repository.enqueue("ORDER_EXECUTED", "O-RECOVER", {}, event_id="dispatch-recover")
+        session.commit()
+
+    with session_factory_a() as session:
+        repository = ExecutionOutboxRepository(session)
+        claimed = repository.claim_pending(
+            limit=1,
+            owner="crashed-dispatcher",
+            now=time_now_minus(seconds=60),
+            claim_seconds=30,
+        )
+        assert len(claimed) == 1
+        session.commit()
+
+    received = []
+    dispatcher = ExecutionOutboxDispatcher(
+        session_factory_b,
+        lambda event_type, aggregate_id, payload: received.append(aggregate_id),
+    )
+
+    result = dispatcher.dispatch_once()
+
+    assert result == {"delivered": 1, "retried": 0, "selected": 1}
+    assert received == ["O-RECOVER"]
+
+
+def time_now_minus(*, seconds: int):
+    from datetime import UTC, datetime, timedelta
+
+    return datetime.now(UTC) - timedelta(seconds=seconds)
