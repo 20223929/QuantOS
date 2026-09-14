@@ -36,6 +36,11 @@ class TradingExecutionEngine:
             order.order_id = result.get("id") or order.order_id
             order.broker_order = result.get("vendor_order")
             status = str(result.get("status", "SUBMITTED")).upper()
+        elif isinstance(result, bool):
+            # A legacy/mock broker returns True to mean the order was accepted
+            # and completed. Real broker adapters return an order object/dict
+            # so their explicit lifecycle state is preserved below.
+            status = "FILLED" if result else "REJECTED"
         else:
             status = str(getattr(result, "status", "SUBMITTED")).upper()
             order.broker_order = result
