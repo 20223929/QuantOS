@@ -1,40 +1,55 @@
-"""Paper trading broker implementation."""
+"""In-memory paper trading broker for development and regression tests."""
 
-from typing import Dict
+from typing import Dict, Any
 
 
 class PaperBroker:
-    """Simple in-memory broker for simulation and tests."""
+    """Deterministic broker that fills orders immediately."""
 
     def __init__(self):
         self.orders: Dict[str, dict] = {}
         self.positions: Dict[str, float] = {}
 
-    def submit_order(self, order: dict) -> dict:
-        order_id = order.get("id", str(len(self.orders) + 1))
+    @staticmethod
+    def _order_id(order: Any) -> str:
+        return str(getattr(order, "order_id", None) or getattr(order, "id", None) or "")
+
+    def submit_order(self, order: Any) -> dict:
+        order_id = self._order_id(order) or str(len(self.orders) + 1)
         filled_order = {
-            **order,
             "id": order_id,
+            "symbol": order.symbol,
+            "side": str(order.side).upper(),
+            "volume": int(order.volume),
+            "price": float(getattr(order, "price", 0.0) or 0.0),
+            "offset": str(getattr(order, "offset", "OPEN")).upper(),
             "status": "FILLED",
         }
         self.orders[order_id] = filled_order
+        order.order_id = order_id
 
-        symbol = order["symbol"]
-        volume = order.get("volume", 0)
-        side = order.get("side", "BUY")
-
-        if side == "SELL":
+        symbol = order.symbol
+        volume = int(order.volume)
+        side = str(order.side).upper()
+        if side in {"SELL", "SHORT"}:
             self.positions[symbol] = self.positions.get(symbol, 0) - volume
         else:
             self.positions[symbol] = self.positions.get(symbol, 0) + volume
 
         return filled_order
 
-    def cancel_order(self, order_id: str) -> dict:
-        order = self.orders.get(order_id)
-        if order:
-            order["status"] = "CANCELLED"
-        return order or {"id": order_id, "status": "NOT_FOUND"}
+    def cancel_order(self, order: Any) -> dict:
+        order_id = self._order_id(order) if not isinstance(order, str) else order
+        stored = self.orders.get(order_id)
+        if stored and stored["status"] == "FILLED":
+            return {"id": order_id, "status": "NOT_CANCELLABLE"}
+        if stored:
+            stored["status"] = "CANCELLED"
+            return stored
+        return {"id": order_id, "status": "NOT_FOUND"}
 
     def query_position(self) -> Dict[str, float]:
-        return self.positions
+        return dict(self.positions)
+
+    def query_orders(self) -> Dict[str, dict]:
+        return dict(self.orders)
