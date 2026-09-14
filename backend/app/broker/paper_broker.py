@@ -1,6 +1,7 @@
 """In-memory paper trading broker for development and regression tests."""
 
-from typing import Dict, Any
+from typing import Any, Dict
+from uuid import uuid4
 
 
 class PaperBroker:
@@ -15,7 +16,7 @@ class PaperBroker:
         return str(getattr(order, "order_id", None) or getattr(order, "id", None) or "")
 
     def submit_order(self, order: Any) -> dict:
-        order_id = self._order_id(order) or str(len(self.orders) + 1)
+        order_id = self._order_id(order) or uuid4().hex
         filled_order = {
             "id": order_id,
             "symbol": order.symbol,
