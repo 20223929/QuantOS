@@ -50,7 +50,9 @@ def test_dispatcher_delivers_pending_events_and_marks_processed():
     result = dispatcher.dispatch_once()
 
     assert result == {"delivered": 1, "retried": 0, "selected": 1}
-    assert received == [("ORDER_EXECUTED", "O-DISPATCH", {"order_id": "O-DISPATCH", "volume": 2})]
+    assert received == [
+        ("ORDER_EXECUTED", "O-DISPATCH", {"order_id": "O-DISPATCH", "volume": 2, "_event_id": "dispatch-1"})
+    ]
 
     with session_factory() as session:
         repository = ExecutionOutboxRepository(session)
@@ -77,7 +79,7 @@ def test_dispatcher_retries_failed_event_and_continues_other_events():
     result = dispatcher.dispatch_once()
 
     assert result == {"delivered": 1, "retried": 1, "selected": 2}
-    assert received == [("ORDER_EXECUTED", "O-OK", {"order_id": "O-OK"})]
+    assert received == [("ORDER_EXECUTED", "O-OK", {"order_id": "O-OK", "_event_id": "dispatch-ok"})]
 
     with session_factory() as session:
         repository = ExecutionOutboxRepository(session)
@@ -222,6 +224,26 @@ def test_dispatcher_reclaims_expired_claim_from_previous_instance(tmp_path):
 
     assert result == {"delivered": 1, "retried": 0, "selected": 1}
     assert received == ["O-RECOVER"]
+
+
+def test_dispatcher_preserves_distinct_event_ids_for_same_aggregate():
+    session_factory = _new_session_factory()
+    received = []
+
+    with session_factory() as session:
+        repository = ExecutionOutboxRepository(session)
+        repository.enqueue("ORDER_EXECUTED", "O-PARTIAL", {"volume": 2}, event_id="dispatch-partial-1")
+        repository.enqueue("ORDER_EXECUTED", "O-PARTIAL", {"volume": 3}, event_id="dispatch-partial-2")
+        session.commit()
+
+    def handler(event_type, aggregate_id, payload):
+        received.append(payload["_event_id"])
+
+    dispatcher = ExecutionOutboxDispatcher(session_factory, handler)
+    result = dispatcher.dispatch_once()
+
+    assert result == {"delivered": 2, "retried": 0, "selected": 2}
+    assert received == ["dispatch-partial-1", "dispatch-partial-2"]
 
 
 def time_now_minus(*, seconds: int):
