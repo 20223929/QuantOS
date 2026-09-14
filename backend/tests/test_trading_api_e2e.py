@@ -7,11 +7,14 @@ import pytest
 from sqlalchemy import func, select
 
 import app.api.v1.trading as trading_api
+from app.risk.controller import RiskController
+from app.risk.limit import RiskLimit
 from app.storage.execution_outbox import ExecutionOutboxRepository
 from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
 from app.storage.models.outbox import ExecutionOutboxModel
 from app.storage.models.trading import OrderModel, PositionModel, TradeModel
 from app.storage.orm import ORMManager
+from app.trading.execution_engine import TradingExecutionEngine
 from app.trading.execution_event_sink import ExecutionEventSink
 from app.trading.position import Position
 
@@ -59,6 +62,11 @@ class _CancellableBroker:
             return {"id": order_id, "status": "NOT_CANCELLABLE"}
         stored["status"] = "CANCELLED"
         return dict(stored)
+
+
+class _FailIfSubmittedBroker:
+    def submit_order(self, order):
+        raise AssertionError("broker must not be called after risk rejection")
 
 
 @pytest.fixture
@@ -265,10 +273,13 @@ def test_cancel_filled_order_returns_conflict_and_keeps_filled_state(isolated_tr
     assert fetched["order"]["status"] == "FILLED"
 
 
-def test_risk_position_boundary_rejects_without_position_or_execution(isolated_trading):
-    orm, engine = isolated_trading
+def test_risk_position_boundary_rejects_without_broker_execution(isolated_trading, monkeypatch):
+    orm, _ = isolated_trading
+    risk_controller = RiskController(RiskLimit(max_position=100, max_drawdown=0.2))
+    engine = TradingExecutionEngine(_FailIfSubmittedBroker(), risk_controller)
     engine.positions["SHFE.rb"] = Position(symbol="SHFE.rb", volume=100)
-    trading_api.execution_engine.status = "REJECTED"
+    monkeypatch.setattr(trading_api, "risk_controller", risk_controller)
+    monkeypatch.setattr(trading_api, "execution_engine", engine)
 
     response = asyncio.run(
         trading_api.submit_order(
@@ -277,12 +288,13 @@ def test_risk_position_boundary_rejects_without_position_or_execution(isolated_t
     )
     assert response["success"] is False
     assert response["order"]["status"] == "REJECTED"
-    assert response["order"]["reason"] == "risk check rejected order"
+    assert response["order"]["reason"] == "position limit exceeded"
     assert engine.positions["SHFE.rb"].volume == 100
+    assert response["order"]["id"] is None
 
     with orm.session() as session:
         record = session.scalar(select(OrderModel))
         assert record.status == "REJECTED"
-        assert record.reason == "risk check rejected order"
+        assert record.reason == "position limit exceeded"
         assert session.scalar(select(func.count(TradeModel.id))) == 0
         assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 0
