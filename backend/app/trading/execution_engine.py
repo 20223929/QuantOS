@@ -10,6 +10,11 @@ class ExecutionResult:
     order: Any
     message: str = ""
 
+    @property
+    def status(self) -> str:
+        """Expose the order lifecycle status for legacy callers."""
+        return str(getattr(self.order, "status", ""))
+
 
 class TradingExecutionEngine:
     """Order -> Risk -> Broker -> Position execution pipeline."""
