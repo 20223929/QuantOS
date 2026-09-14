@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from uuid import uuid4
 
 from app.storage.execution_outbox import ExecutionOutboxRepository
 
@@ -17,9 +18,13 @@ class ExecutionOutboxMetrics:
 class ExecutionOutboxDispatcher:
     """Deliver durable execution events with per-event retry isolation."""
 
-    def __init__(self, session_factory, handler: Callable[[str, str, dict], None]):
+    def __init__(self, session_factory, handler: Callable[[str, str, dict], None], claim_seconds: int = 30):
+        if claim_seconds <= 0:
+            raise ValueError("claim_seconds must be positive")
         self.session_factory = session_factory
         self.handler = handler
+        self.claim_seconds = claim_seconds
+        self.owner = f"dispatcher-{uuid4()}"
         self.metrics = ExecutionOutboxMetrics()
 
     def dispatch_once(self, limit: int = 100) -> dict[str, int]:
@@ -28,17 +33,21 @@ class ExecutionOutboxDispatcher:
 
         with self.session_factory() as session:
             repository = ExecutionOutboxRepository(session)
-            events = repository.pending(limit)
+            events = repository.claim_pending(
+                limit=limit,
+                owner=self.owner,
+                claim_seconds=self.claim_seconds,
+            )
 
             for event in events:
                 try:
                     self.handler(event.event_type, event.aggregate_id, json.loads(event.payload))
                 except Exception:
-                    repository.mark_retry(event.event_id)
-                    retried += 1
+                    if repository.mark_retry(event.event_id, owner=self.owner) is not None:
+                        retried += 1
                 else:
-                    repository.mark_processed(event.event_id)
-                    delivered += 1
+                    if repository.mark_processed(event.event_id, owner=self.owner) is not None:
+                        delivered += 1
 
             session.commit()
 
