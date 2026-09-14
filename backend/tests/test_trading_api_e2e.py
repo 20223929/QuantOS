@@ -16,6 +16,7 @@ from app.storage.models.trading import OrderModel, PositionModel, TradeModel
 from app.storage.orm import ORMManager
 from app.trading.execution_engine import TradingExecutionEngine
 from app.trading.execution_event_sink import ExecutionEventSink
+from app.trading.order import Order
 from app.trading.position import Position
 
 
@@ -106,6 +107,44 @@ def test_submit_order_persists_full_execution_chain_and_dispatches(isolated_trad
         assert order.reason == ""
         assert position.volume == 5
         assert event.status == "PENDING"
+
+
+def test_partial_fill_then_fill_persists_incremental_trades_and_outbox(isolated_trading):
+    orm, engine = isolated_trading
+    order = Order(symbol="SHFE.rb", side="BUY", volume=5, price=3500, order_id="partial-1")
+
+    order.status = "PARTIALLY_FILLED"
+    order.filled_volume = 2
+    engine.positions[order.symbol] = Position(symbol=order.symbol, volume=2)
+    trading_api.persist_execution(order)
+
+    order.status = "FILLED"
+    order.filled_volume = 5
+    engine.positions[order.symbol].volume = 5
+    trading_api.persist_execution(order)
+    trading_api.persist_execution(order)
+
+    with orm.session() as session:
+        record = session.scalar(select(OrderModel).where(OrderModel.order_id == "partial-1"))
+        trades = list(session.scalars(select(TradeModel).order_by(TradeModel.id)))
+        position = session.scalar(select(PositionModel).where(PositionModel.symbol == "SHFE.rb"))
+        events = list(session.scalars(select(ExecutionOutboxModel).order_by(ExecutionOutboxModel.id)))
+        assert record.status == "FILLED"
+        assert len(trades) == 2
+        assert [trade.volume for trade in trades] == [2, 3]
+        assert sum(trade.volume for trade in trades) == 5
+        assert position.volume == 5
+        assert len(events) == 2
+        assert [event.event_id for event in events] == [
+            "order-executed:partial-1:2",
+            "order-executed:partial-1:5",
+        ]
+
+    first_dispatch = asyncio.run(trading_api.dispatch_execution_outbox())
+    second_dispatch = asyncio.run(trading_api.dispatch_execution_outbox())
+    assert first_dispatch == {"delivered": 2, "retried": 0, "selected": 2}
+    assert second_dispatch == {"delivered": 0, "retried": 0, "selected": 0}
+    assert len(trading_api.execution_event_sink.snapshot()) == 2
 
 
 def test_rejected_order_persists_and_returns_reason(isolated_trading):
