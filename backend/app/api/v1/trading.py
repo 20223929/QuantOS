@@ -28,27 +28,33 @@ _orm.create_tables()
 execution_outbox_dispatcher = ExecutionOutboxDispatcher(_orm.session, execution_event_sink.handle)
 
 
-def _load_persisted_positions() -> None:
+def _load_persisted_trading_state() -> None:
     with _orm.session() as session:
         repository = TradingRepository(session)
         recovered = repository.recover_positions_from_trades()
         if recovered:
             session.commit()
+        fill_cache: dict[str, float] = {}
+        for record in repository.list_orders():
+            filled = repository.order_filled_volume(record.id)
+            if filled > 0 and record.order_id:
+                fill_cache[str(record.order_id)] = filled
+        execution_engine.restore_filled_volumes(fill_cache)
         for record in repository.list_positions():
-            execution_engine.positions[record.symbol] = Position(symbol=record.symbol, volume=int(record.volume))
+            execution_engine.positions[record.symbol] = Position(symbol=record.symbol, volume=record.volume)
 
 
-_load_persisted_positions()
+_load_persisted_trading_state()
 
 
 def serialize_order(order: dict | Order) -> dict:
     if isinstance(order, dict):
-        return {"id": order.get("id"), "symbol": order.get("symbol"), "side": order.get("side"), "volume": order.get("volume"), "price": order.get("price"), "offset": order.get("offset", "OPEN"), "status": order.get("status"), "reason": order.get("reason", "")}
-    return {"id": order.order_id, "symbol": order.symbol, "side": order.side, "volume": order.volume, "price": order.price, "offset": order.offset, "status": order.status, "reason": order.reason}
+        return {"id": order.get("id"), "symbol": order.get("symbol"), "side": order.get("side"), "volume": order.get("volume"), "price": order.get("price"), "offset": order.get("offset", "OPEN"), "status": order.get("status"), "reason": order.get("reason", ""), "filled_volume": order.get("filled_volume", 0)}
+    return {"id": order.order_id, "symbol": order.symbol, "side": order.side, "volume": order.volume, "price": order.price, "offset": order.offset, "status": order.status, "reason": order.reason, "filled_volume": order.filled_volume}
 
 
-def serialize_order_record(record) -> dict:
-    return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": record.reason}
+def serialize_order_record(record, filled_volume: float | None = None) -> dict:
+    return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": record.reason, "filled_volume": record._filled_volume if hasattr(record, "_filled_volume") else (filled_volume or 0.0)}
 
 
 def persist_execution(order: Order) -> None:
@@ -132,16 +138,16 @@ async def list_orders():
     with _orm.session() as session:
         repository = TradingRepository(session)
         records = repository.list_orders()
-        return {"orders": [serialize_order_record(record) for record in records]}
+        return {"orders": [serialize_order_record(record, repository.order_filled_volume(record.id)) for record in records]}
 
 
 @router.get("/orders/{order_id}")
 async def get_order(order_id: str):
     with _orm.session() as session:
         repository = TradingRepository(session)
-        for record in repository.list_orders():
-            if record.order_id == order_id:
-                return {"order": serialize_order_record(record)}
+        record = repository.get_order(order_id)
+        if record is not None:
+            return {"order": serialize_order_record(record, repository.order_filled_volume(record.id))}
     raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
 
 
