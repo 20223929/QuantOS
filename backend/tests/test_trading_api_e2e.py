@@ -29,7 +29,36 @@ class _ExecutionEngine:
                 position.volume += order.volume
             else:
                 position.volume -= order.volume
-        return type("Result", (), {"success": self.status != "REJECTED", "message": self.status.lower()})()
+        elif self.status == "REJECTED":
+            order.reason = "risk check rejected order"
+        return type("Result", (), {"success": self.status != "REJECTED", "message": order.reason or self.status.lower()})()
+
+
+class _CancellableBroker:
+    def __init__(self, status: str = "SUBMITTED"):
+        self.orders = {
+            "pending-1": {
+                "id": "pending-1",
+                "symbol": "SHFE.rb",
+                "side": "BUY",
+                "volume": 2,
+                "price": 3500.0,
+                "offset": "OPEN",
+                "status": status,
+            }
+        }
+
+    def query_orders(self):
+        return dict(self.orders)
+
+    def cancel_order(self, order_id):
+        stored = self.orders.get(order_id)
+        if stored is None:
+            return {"id": order_id, "status": "NOT_FOUND"}
+        if stored["status"] == "FILLED":
+            return {"id": order_id, "status": "NOT_CANCELLABLE"}
+        stored["status"] = "CANCELLED"
+        return dict(stored)
 
 
 @pytest.fixture
@@ -48,12 +77,11 @@ def isolated_trading(monkeypatch, tmp_path):
 def test_submit_order_persists_full_execution_chain_and_dispatches(isolated_trading):
     orm, _ = isolated_trading
 
-    async def scenario():
-        return await trading_api.submit_order(
+    response = asyncio.run(
+        trading_api.submit_order(
             {"symbol": "SHFE.rb", "side": "BUY", "volume": 5, "price": 3500, "offset": "OPEN"}
         )
-
-    response = asyncio.run(scenario())
+    )
     assert response["success"] is True
     assert response["order"]["status"] == "FILLED"
 
@@ -67,28 +95,36 @@ def test_submit_order_persists_full_execution_chain_and_dispatches(isolated_trad
         position = session.scalar(select(PositionModel))
         event = session.scalar(select(ExecutionOutboxModel))
         assert order.status == "FILLED"
+        assert order.reason == ""
         assert position.volume == 5
         assert event.status == "PENDING"
 
 
-def test_rejected_order_is_persisted_without_trade_position_or_outbox(isolated_trading):
+def test_rejected_order_persists_and_returns_reason(isolated_trading):
     orm, _ = isolated_trading
     trading_api.execution_engine.status = "REJECTED"
 
-    async def scenario():
-        return await trading_api.submit_order(
+    response = asyncio.run(
+        trading_api.submit_order(
             {"symbol": "SHFE.rb", "side": "BUY", "volume": 5, "price": 3500}
         )
-
-    response = asyncio.run(scenario())
+    )
+    order_id = response["order"]["id"]
     assert response["success"] is False
     assert response["order"]["status"] == "REJECTED"
+    assert response["order"]["reason"] == "risk check rejected order"
+
+    fetched = asyncio.run(trading_api.get_order(order_id))
+    assert fetched["order"]["status"] == "REJECTED"
+    assert fetched["order"]["reason"] == "risk check rejected order"
 
     with orm.session() as session:
         assert session.scalar(select(func.count(OrderModel.id))) == 1
         assert session.scalar(select(func.count(TradeModel.id))) == 0
         assert session.scalar(select(func.count(PositionModel.id))) == 0
         assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 0
+        record = session.scalar(select(OrderModel))
+        assert record.reason == "risk check rejected order"
 
 
 def test_invalid_order_request_is_rejected_before_execution(isolated_trading):
@@ -108,13 +144,11 @@ def test_invalid_order_request_is_rejected_before_execution(isolated_trading):
 
 def test_outbox_status_reflects_pending_then_processed(isolated_trading):
     orm, _ = isolated_trading
-
-    async def submit():
-        return await trading_api.submit_order(
+    response = asyncio.run(
+        trading_api.submit_order(
             {"symbol": "SHFE.rb", "side": "BUY", "volume": 2, "price": 3500}
         )
-
-    response = asyncio.run(submit())
+    )
     assert response["success"] is True
 
     async def status_and_dispatch():
@@ -139,18 +173,116 @@ def test_outbox_status_reflects_pending_then_processed(isolated_trading):
 
 
 def test_get_order_and_list_positions_match_persisted_state(isolated_trading):
-    async def submit():
-        return await trading_api.submit_order(
+    response = asyncio.run(
+        trading_api.submit_order(
             {"symbol": "SHFE.rb", "side": "BUY", "volume": 3, "price": 3500}
         )
-
-    asyncio.run(submit())
-
+    )
+    order_id = response["order"]["id"]
     listed = asyncio.run(trading_api.list_orders())
-    order_id = listed["orders"][0]["id"]
     fetched = asyncio.run(trading_api.get_order(order_id))
     positions = asyncio.run(trading_api.list_positions())
 
+    assert listed["orders"][0]["id"] == order_id
     assert fetched["order"]["id"] == order_id
     assert fetched["order"]["status"] == "FILLED"
+    assert fetched["order"]["reason"] == ""
     assert positions["positions"]["SHFE.rb"] == 3
+
+
+def test_cancel_submitted_order_updates_persisted_lifecycle(isolated_trading, monkeypatch):
+    orm, _ = isolated_trading
+    broker = _CancellableBroker()
+    monkeypatch.setattr(trading_api, "broker", broker)
+
+    with orm.session() as session:
+        repository = trading_api.TradingRepository(session)
+        repository.save_order(
+            type(
+                "Order",
+                (),
+                {
+                    "order_id": "pending-1",
+                    "symbol": "SHFE.rb",
+                    "side": "BUY",
+                    "volume": 2,
+                    "price": 3500.0,
+                    "status": "SUBMITTED",
+                    "reason": "",
+                    "offset": "OPEN",
+                },
+            )()
+        )
+        session.commit()
+
+    response = asyncio.run(trading_api.cancel_order("pending-1"))
+    assert response["success"] is True
+    assert response["order"]["status"] == "CANCELLED"
+
+    fetched = asyncio.run(trading_api.get_order("pending-1"))
+    assert fetched["order"]["status"] == "CANCELLED"
+
+    with orm.session() as session:
+        assert session.scalar(select(func.count(TradeModel.id))) == 0
+        assert session.scalar(select(func.count(PositionModel.id))) == 0
+        record = session.scalar(select(OrderModel))
+        assert record.status == "CANCELLED"
+
+
+def test_cancel_filled_order_returns_conflict_and_keeps_filled_state(isolated_trading, monkeypatch):
+    orm, _ = isolated_trading
+    broker = _CancellableBroker(status="FILLED")
+    monkeypatch.setattr(trading_api, "broker", broker)
+
+    with orm.session() as session:
+        repository = trading_api.TradingRepository(session)
+        repository.save_order(
+            type(
+                "Order",
+                (),
+                {
+                    "order_id": "pending-1",
+                    "symbol": "SHFE.rb",
+                    "side": "BUY",
+                    "volume": 2,
+                    "price": 3500.0,
+                    "status": "FILLED",
+                    "reason": "",
+                    "offset": "OPEN",
+                },
+            )()
+        )
+        session.commit()
+
+    async def scenario():
+        with pytest.raises(trading_api.HTTPException) as exc_info:
+            await trading_api.cancel_order("pending-1")
+        return exc_info.value
+
+    exc = asyncio.run(scenario())
+    assert exc.status_code == 409
+    fetched = asyncio.run(trading_api.get_order("pending-1"))
+    assert fetched["order"]["status"] == "FILLED"
+
+
+def test_risk_position_boundary_rejects_without_position_or_execution(isolated_trading):
+    orm, engine = isolated_trading
+    engine.positions["SHFE.rb"] = Position(symbol="SHFE.rb", volume=100)
+    trading_api.execution_engine.status = "REJECTED"
+
+    response = asyncio.run(
+        trading_api.submit_order(
+            {"symbol": "SHFE.rb", "side": "BUY", "volume": 1, "price": 3500}
+        )
+    )
+    assert response["success"] is False
+    assert response["order"]["status"] == "REJECTED"
+    assert response["order"]["reason"] == "risk check rejected order"
+    assert engine.positions["SHFE.rb"].volume == 100
+
+    with orm.session() as session:
+        record = session.scalar(select(OrderModel))
+        assert record.status == "REJECTED"
+        assert record.reason == "risk check rejected order"
+        assert session.scalar(select(func.count(TradeModel.id))) == 0
+        assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 0
