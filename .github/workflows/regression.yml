@@ -43,7 +43,8 @@ jobs:
         run: |
           cd backend
           alembic -c alembic.ini upgrade head
-          alembic -c alembic.ini current
+          alembic -c alembic.ini current | grep -q '0001'
+          alembic -c alembic.ini heads | grep -q '0001'
 
       - name: Run backend tests
         run: |
@@ -68,6 +69,7 @@ jobs:
           npm install
           npx tsc --noEmit
           npm run build
+          test -f dist/index.html
 
   quality-gate:
     name: Release Quality Gate
