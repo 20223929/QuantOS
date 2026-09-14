@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +25,16 @@ class TradingExecutionEngine:
         self.risk_controller = risk_controller
         self.positions: dict[str, Position] = {}
         self._applied_filled_volume: dict[str, float] = {}
+
+    def snapshot_runtime_state(self) -> tuple[dict[str, Position], dict[str, float]]:
+        """Capture mutable execution state before a persistence transaction."""
+        return deepcopy(self.positions), dict(self._applied_filled_volume)
+
+    def restore_runtime_state(self, snapshot: tuple[dict[str, Position], dict[str, float]]) -> None:
+        """Restore execution state when durable persistence rolls back."""
+        positions, applied_fills = snapshot
+        self.positions = deepcopy(positions)
+        self._applied_filled_volume = dict(applied_fills)
 
     def restore_filled_volumes(self, filled_volumes: dict[str, float]) -> None:
         """Restore durable cumulative fills so replayed broker events remain idempotent."""
