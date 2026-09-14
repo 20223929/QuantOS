@@ -47,8 +47,8 @@ jobs:
           heads=$(alembic -c alembic.ini heads)
           printf '%s\n' "$current"
           printf '%s\n' "$heads"
-          printf '%s\n' "$current" | grep -q '0004_execution_outbox_claim'
-          printf '%s\n' "$heads" | grep -q '0004_execution_outbox_claim'
+          printf '%s\n' "$current" | grep -q '0005_order_reason'
+          printf '%s\n' "$heads" | grep -q '0005_order_reason'
 
       - name: Run backend tests
         run: |
