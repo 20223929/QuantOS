@@ -43,7 +43,13 @@ class DurableExecutionEventSink:
             )
             session.commit()
 
-        self._events.append(self._serialize_event(event_id, event_type, aggregate_id, stored_payload))
+        self._events.append(
+            {
+                "event_type": event_type,
+                "aggregate_id": aggregate_id,
+                "payload": json.loads(json.dumps(stored_payload, ensure_ascii=False)),
+            }
+        )
         if len(self._events) > self.max_events:
             del self._events[: len(self._events) - self.max_events]
 
