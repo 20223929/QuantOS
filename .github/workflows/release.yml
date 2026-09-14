@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
-  workflow_dispatch:
+      - 'v*.*.*-*'
 
 permissions:
   contents: read
@@ -22,11 +22,7 @@ jobs:
       - name: Validate release tag
         run: |
           test "${GITHUB_REF_TYPE}" = "tag"
-          printf '%s\n' "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
-
-      - name: Validate release commit ancestry
-        run: |
-          git merge-base --is-ancestor "${GITHUB_SHA}" HEAD
+          printf '%s\n' "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 
       - name: Validate source version
         run: |
