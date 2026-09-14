@@ -56,6 +56,8 @@ jobs:
           sha256sum "$archive" > SHA256SUMS
           test -s "$archive"
           test -s SHA256SUMS
+          test "$(awk '{print $2}' SHA256SUMS)" = "$archive"
+          sha256sum -c SHA256SUMS
 
       - name: Publish GitHub Release
         env:
