@@ -1,20 +1,14 @@
 from fastapi import APIRouter, HTTPException
 
 from app.adapters.tqsdk_adapter import TqSdkAdapter
+from app.api.v1.trading import execution_engine
 from app.engine.strategy_engine import StrategyEngine
-from app.risk.controller import RiskController
-from app.risk.limit import RiskLimit
 from app.strategies.ma_cross import MACrossStrategy
-from app.trading.execution_engine import TradingExecutionEngine
-from app.broker.paper_broker import PaperBroker
 from app.trading.runtime import StrategyRuntime
 
 router = APIRouter(prefix="/runtime", tags=["runtime"])
 
 market_adapter = TqSdkAdapter()
-broker = PaperBroker()
-risk_controller = RiskController(RiskLimit(max_position=100, max_drawdown=0.2))
-execution_engine = TradingExecutionEngine(broker, risk_controller)
 strategy_engine = StrategyEngine()
 strategy_engine.register(MACrossStrategy())
 runtimes: dict[str, StrategyRuntime] = {}
