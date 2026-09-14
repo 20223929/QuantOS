@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 
 
 class ExecutionOutboxWorker:
@@ -18,6 +17,7 @@ class ExecutionOutboxWorker:
         self._task: asyncio.Task | None = None
         self._running = False
         self.last_result: dict[str, int] | None = None
+        self.last_error: str | None = None
 
     @property
     def running(self) -> bool:
@@ -26,13 +26,18 @@ class ExecutionOutboxWorker:
     async def run_once(self) -> dict[str, int]:
         result = self.dispatcher.dispatch_once(limit=self.limit)
         self.last_result = result
+        self.last_error = None
         return result
 
     async def _run(self) -> None:
         try:
             while self._running:
-                await self.run_once()
-                await asyncio.sleep(self.interval_seconds)
+                try:
+                    await self.run_once()
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                if self._running:
+                    await asyncio.sleep(self.interval_seconds)
         except asyncio.CancelledError:
             raise
         finally:
