@@ -1,16 +1,41 @@
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
+from sqlalchemy import create_engine
 
 from app.broker.paper_broker import PaperBroker
 from app.risk.controller import RiskController
 from app.risk.limit import RiskLimit
+from app.storage.orm import ORMManager
+from app.storage.trading_repository import TradingRepository
 from app.trading.execution_engine import TradingExecutionEngine
 from app.trading.order import Order
+from app.trading.position import Position
 
 router = APIRouter(prefix="/trading", tags=["trading"])
 
 broker = PaperBroker()
 risk_controller = RiskController(RiskLimit(max_position=100, max_drawdown=0.2))
 execution_engine = TradingExecutionEngine(broker, risk_controller)
+
+_DB_PATH = Path("data/quantos.db")
+_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+_orm = ORMManager(f"sqlite:///{_DB_PATH}")
+_orm.create_tables()
+
+
+
+def _load_persisted_positions() -> None:
+    with _orm.session() as session:
+        repository = TradingRepository(session)
+        for record in repository.list_positions():
+            execution_engine.positions[record.symbol] = Position(
+                symbol=record.symbol,
+                volume=int(record.volume),
+            )
+
+
+_load_persisted_positions()
 
 
 def serialize_order(order: dict | Order) -> dict:
@@ -37,6 +62,39 @@ def serialize_order(order: dict | Order) -> dict:
     }
 
 
+def serialize_order_record(record) -> dict:
+    return {
+        "id": record.order_id,
+        "symbol": record.symbol,
+        "side": record.side,
+        "volume": record.volume,
+        "price": record.price,
+        "offset": record.offset,
+        "status": record.status,
+        "reason": "",
+    }
+
+
+def _persist_execution(order: Order) -> None:
+    with _orm.session() as session:
+        repository = TradingRepository(session)
+        record = repository.save_order(order)
+        if order.status == "FILLED":
+            repository.save_trade(
+                {
+                    "trade_id": f"trade-{order.order_id}",
+                    "order_id": record.id,
+                    "symbol": order.symbol,
+                    "side": order.side,
+                    "price": order.price,
+                    "volume": order.volume,
+                }
+            )
+            position = execution_engine.positions[order.symbol]
+            repository.upsert_position(order.symbol, position.volume)
+        session.commit()
+
+
 @router.post("/orders")
 async def submit_order(payload: dict):
     symbol = str(payload.get("symbol", "")).strip()
@@ -51,6 +109,7 @@ async def submit_order(payload: dict):
 
     order = Order(symbol=symbol, side=side, volume=volume, price=price, offset=offset)
     result = execution_engine.execute(order)
+    _persist_execution(order)
     return {
         "success": result.success,
         "message": result.message,
@@ -60,15 +119,20 @@ async def submit_order(payload: dict):
 
 @router.get("/orders")
 async def list_orders():
-    return {"orders": {order_id: serialize_order(order) for order_id, order in broker.query_orders().items()}}
+    with _orm.session() as session:
+        repository = TradingRepository(session)
+        records = repository.list_orders()
+        return {"orders": [serialize_order_record(record) for record in records]}
 
 
 @router.get("/orders/{order_id}")
 async def get_order(order_id: str):
-    order = broker.query_orders().get(order_id)
-    if order is None:
-        raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
-    return {"order": serialize_order(order)}
+    with _orm.session() as session:
+        repository = TradingRepository(session)
+        for record in repository.list_orders():
+            if record.order_id == order_id:
+                return {"order": serialize_order_record(record)}
+    raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
 
 
 @router.post("/orders/{order_id}/cancel")
@@ -83,18 +147,29 @@ async def cancel_order(order_id: str):
         raise HTTPException(status_code=409, detail=f"order cannot be cancelled: {order_id}")
     if status == "NOT_FOUND":
         raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
+
+    with _orm.session() as session:
+        repository = TradingRepository(session)
+        repository.update_order_status(order_id, status)
+        session.commit()
     return {"success": True, "order": serialize_order(result)}
 
 
 @router.get("/positions")
 async def list_positions():
-    return {"positions": broker.query_position()}
+    with _orm.session() as session:
+        repository = TradingRepository(session)
+        records = repository.list_positions()
+        return {"positions": {record.symbol: record.volume for record in records}}
 
 
 @router.get("/risk")
 async def risk_state():
+    with _orm.session() as session:
+        repository = TradingRepository(session)
+        positions = {record.symbol: record.volume for record in repository.list_positions()}
     return {
         "max_position": risk_controller.limit.max_position,
         "max_drawdown": risk_controller.limit.max_drawdown,
-        "positions": broker.query_position(),
+        "positions": positions,
     }
