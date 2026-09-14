@@ -25,6 +25,14 @@ class TradingExecutionEngine:
         self.positions: dict[str, Position] = {}
         self._applied_filled_volume: dict[str, float] = {}
 
+    def restore_filled_volumes(self, filled_volumes: dict[str, float]) -> None:
+        """Restore durable cumulative fills so replayed broker events remain idempotent."""
+        self._applied_filled_volume = {
+            str(order_id): float(volume or 0.0)
+            for order_id, volume in filled_volumes.items()
+            if float(volume or 0.0) > 0
+        }
+
     def execute(self, order):
         decision = self.risk_controller.check_order(order, self.positions.get(order.symbol, Position(order.symbol)).volume)
         if not decision.allowed:
