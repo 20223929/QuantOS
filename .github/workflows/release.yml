@@ -88,6 +88,25 @@ jobs:
           gh release upload "$tag" "QuantOS-${version}-source.tar.gz" --clobber
           gh release upload "$tag" SHA256SUMS --clobber
 
+      - name: Verify downloaded release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          archive="QuantOS-${version}-source.tar.gz"
+          rm -rf release-download
+          mkdir -p release-download
+          gh release download "$tag" \
+            --pattern "$archive" \
+            --pattern SHA256SUMS \
+            --dir release-download
+          test -s "release-download/$archive"
+          test -s release-download/SHA256SUMS
+          cd release-download
+          test "$(awk '{print $2}' SHA256SUMS)" = "$archive"
+          sha256sum -c SHA256SUMS
+
       - name: Upload release manifest artifact
         uses: actions/upload-artifact@v4
         with:
