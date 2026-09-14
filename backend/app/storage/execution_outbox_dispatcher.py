@@ -70,9 +70,25 @@ class ExecutionOutboxDispatcher:
         thread.start()
         return thread
 
+    def _finalize(self, event_id: str, *, retry: bool) -> bool:
+        try:
+            with self.session_factory() as session:
+                repository = ExecutionOutboxRepository(session)
+                result = (
+                    repository.mark_retry(event_id, owner=self.owner)
+                    if retry
+                    else repository.mark_processed(event_id, owner=self.owner)
+                )
+                if result is None:
+                    return False
+                session.commit()
+                return True
+        except Exception:
+            return False
+
     def dispatch_once(self, limit: int = 100) -> dict[str, int]:
-        delivered = 0
-        retried = 0
+        if limit <= 0:
+            return {"delivered": 0, "retried": 0, "selected": 0}
 
         with self.session_factory() as session:
             repository = ExecutionOutboxRepository(session)
@@ -81,27 +97,37 @@ class ExecutionOutboxDispatcher:
                 owner=self.owner,
                 claim_seconds=self.claim_seconds,
             )
-
-            for event in events:
-                stop_event = threading.Event()
-                heartbeat = self._start_heartbeat(event.event_id, stop_event)
-                try:
-                    self.handler(event.event_type, event.aggregate_id, json.loads(event.payload))
-                except Exception:
-                    if repository.mark_retry(event.event_id, owner=self.owner) is not None:
-                        retried += 1
-                else:
-                    if repository.mark_processed(event.event_id, owner=self.owner) is not None:
-                        delivered += 1
-                finally:
-                    stop_event.set()
-                    heartbeat.join(timeout=min(self.heartbeat_seconds, 1.0))
-
             session.commit()
+
+        delivered = 0
+        retried = 0
+        claim_lost = 0
+
+        for event in events:
+            stop_event = threading.Event()
+            heartbeat = self._start_heartbeat(event.event_id, stop_event)
+            try:
+                self.handler(event.event_type, event.aggregate_id, json.loads(event.payload))
+            except Exception:
+                retry_marked = self._finalize(event.event_id, retry=True)
+                if retry_marked:
+                    retried += 1
+                else:
+                    claim_lost += 1
+            else:
+                processed = self._finalize(event.event_id, retry=False)
+                if processed:
+                    delivered += 1
+                else:
+                    claim_lost += 1
+            finally:
+                stop_event.set()
+                heartbeat.join(timeout=min(self.heartbeat_seconds, 1.0))
 
         self.metrics.delivered += delivered
         self.metrics.retried += retried
         self.metrics.selected += len(events)
+        self.metrics.claim_lost += claim_lost
         return {"delivered": delivered, "retried": retried, "selected": len(events)}
 
     def snapshot(self) -> dict[str, int]:
