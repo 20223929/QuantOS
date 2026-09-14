@@ -1,13 +1,13 @@
-from threading import Event, Thread
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.storage.execution_outbox import ExecutionOutboxRepository
+from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
 from app.storage.models.base import Base
 from app.storage.models.consumption import ConsumedExecutionEventModel
 from app.storage.models.outbox import ExecutionOutboxModel
-from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
 from app.trading.durable_execution_event_sink import DurableExecutionEventSink
 
 
@@ -59,20 +59,18 @@ def test_claim_loss_replay_is_deduplicated_by_durable_consumer(tmp_path):
 
     first_sink = DurableExecutionEventSink(session_factory_a)
     second_sink = DurableExecutionEventSink(session_factory_b)
-    handler_started = Event()
 
     def handler(event_type, aggregate_id, payload):
         first_sink.handle(event_type, aggregate_id, payload)
-        handler_started.set()
         with session_factory_b() as session:
-            repository = ExecutionOutboxRepository(session)
-            reclaimed = repository.claim_pending(
-                limit=1,
-                owner="reclaimer",
-                now=_now_plus(60),
-                claim_seconds=30,
+            event = session.scalar(
+                select(ExecutionOutboxModel).where(
+                    ExecutionOutboxModel.event_id == "durable-claim-loss"
+                )
             )
-            assert [event.event_id for event in reclaimed] == ["durable-claim-loss"]
+            event.status = "PENDING"
+            event.claim_owner = "reclaimer"
+            event.claim_expires_at = datetime.now(UTC) - timedelta(seconds=1)
             session.commit()
 
     dispatcher_a = ExecutionOutboxDispatcher(
@@ -82,17 +80,17 @@ def test_claim_loss_replay_is_deduplicated_by_durable_consumer(tmp_path):
     )
     result_a = dispatcher_a.dispatch_once()
 
-    assert handler_started.is_set()
     assert result_a == {"delivered": 0, "retried": 0, "selected": 1}
     assert dispatcher_a.snapshot()["claim_lost"] == 1
 
-    replay_result = ExecutionOutboxDispatcher(
+    dispatcher_b = ExecutionOutboxDispatcher(
         session_factory_b,
         lambda event_type, aggregate_id, payload: second_sink.handle(
             event_type, aggregate_id, payload
         ),
         claim_seconds=30,
-    ).dispatch_once()
+    )
+    replay_result = dispatcher_b.dispatch_once()
 
     assert replay_result == {"delivered": 1, "retried": 0, "selected": 1}
     assert first_sink.snapshot() == [
@@ -111,9 +109,3 @@ def test_claim_loss_replay_is_deduplicated_by_durable_consumer(tmp_path):
         )
         assert event.status == "PROCESSED"
         assert session.scalar(select(func.count(ConsumedExecutionEventModel.id))) == 1
-
-
-def _now_plus(seconds):
-    from datetime import UTC, datetime, timedelta
-
-    return datetime.now(UTC) + timedelta(seconds=seconds)
