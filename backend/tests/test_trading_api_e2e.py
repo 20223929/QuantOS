@@ -14,6 +14,7 @@ from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
 from app.storage.models.outbox import ExecutionOutboxModel
 from app.storage.models.trading import OrderModel, PositionModel, TradeModel
 from app.storage.orm import ORMManager
+from app.storage.trading_repository import TradingRepository
 from app.trading.execution_engine import TradingExecutionEngine
 from app.trading.execution_event_sink import ExecutionEventSink
 from app.trading.order import Order
@@ -68,6 +69,15 @@ class _CancellableBroker:
 class _FailIfSubmittedBroker:
     def submit_order(self, order):
         raise AssertionError("broker must not be called after risk rejection")
+
+
+class _FilledBroker:
+    def submit_order(self, order):
+        return {
+            "id": order.order_id,
+            "status": "FILLED",
+            "filled_volume": order.volume,
+        }
 
 
 @pytest.fixture
@@ -350,4 +360,34 @@ def test_risk_position_boundary_rejects_without_broker_execution(isolated_tradin
         assert record.status == "REJECTED"
         assert record.reason == "position limit exceeded"
         assert session.scalar(select(func.count(TradeModel.id))) == 0
+        assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 0
+
+
+def test_submit_order_rolls_back_runtime_state_when_persistence_fails(isolated_trading, monkeypatch):
+    orm, _ = isolated_trading
+    risk_controller = RiskController(RiskLimit(max_position=100, max_drawdown=0.2))
+    engine = TradingExecutionEngine(_FilledBroker(), risk_controller)
+    monkeypatch.setattr(trading_api, "risk_controller", risk_controller)
+    monkeypatch.setattr(trading_api, "execution_engine", engine)
+
+    def fail_upsert_position(self, symbol, volume):
+        raise RuntimeError("forced persistence failure")
+
+    monkeypatch.setattr(TradingRepository, "upsert_position", fail_upsert_position)
+
+    with pytest.raises(trading_api.HTTPException) as exc_info:
+        asyncio.run(
+            trading_api.submit_order(
+                {"symbol": "SHFE.rb", "side": "BUY", "volume": 4, "price": 3500}
+            )
+        )
+
+    assert exc_info.value.status_code == 500
+    assert engine.positions == {}
+    assert engine._applied_filled_volume == {}
+
+    with orm.session() as session:
+        assert session.scalar(select(func.count(OrderModel.id))) == 0
+        assert session.scalar(select(func.count(TradeModel.id))) == 0
+        assert session.scalar(select(func.count(PositionModel.id))) == 0
         assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 0
