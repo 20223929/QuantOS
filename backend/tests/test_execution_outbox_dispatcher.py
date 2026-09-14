@@ -190,6 +190,84 @@ def test_processed_claim_cannot_be_reused_after_expiry():
         assert event.claim_owner == "worker-a"
 
 
+def test_two_dispatchers_select_one_event_exactly_once_under_contention(tmp_path):
+    db_path = tmp_path / "contention-outbox.db"
+    session_factory_a = _new_file_session_factory(db_path)
+    session_factory_b = _new_file_session_factory(db_path)
+    with session_factory_a() as session:
+        ExecutionOutboxRepository(session).enqueue("ORDER_EXECUTED", "O-CONTEND", {}, event_id="dispatch-contention")
+        session.commit()
+
+    barrier = threading.Barrier(2)
+    results = []
+    received = []
+    lock = threading.Lock()
+
+    def run_dispatcher(session_factory, owner_label):
+        dispatcher = ExecutionOutboxDispatcher(session_factory, lambda event_type, aggregate_id, payload: received.append((owner_label, payload["_event_id"])), claim_seconds=5)
+        barrier.wait(timeout=5)
+        result = dispatcher.dispatch_once()
+        with lock:
+            results.append(result)
+
+    thread_a = threading.Thread(target=run_dispatcher, args=(session_factory_a, "a"))
+    thread_b = threading.Thread(target=run_dispatcher, args=(session_factory_b, "b"))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=10)
+    thread_b.join(timeout=10)
+
+    assert len(results) == 2
+    assert sum(result["selected"] for result in results) == 1
+    assert sum(result["delivered"] for result in results) == 1
+    assert received == [(received[0][0], "dispatch-contention")]
+    with session_factory_a() as session:
+        repository = ExecutionOutboxRepository(session)
+        assert repository.pending() == []
+        assert repository.status_counts()["processed"] == 1
+
+
+def test_claim_loss_after_successful_handler_keeps_event_replayable(tmp_path):
+    db_path = tmp_path / "claim-loss-outbox.db"
+    session_factory_a = _new_file_session_factory(db_path)
+    session_factory_b = _new_file_session_factory(db_path)
+    with session_factory_a() as session:
+        ExecutionOutboxRepository(session).enqueue("ORDER_EXECUTED", "O-CLAIM-LOST", {}, event_id="dispatch-claim-lost")
+        session.commit()
+
+    handler_calls = []
+
+    def handler(event_type, aggregate_id, payload):
+        handler_calls.append(payload["_event_id"])
+        with session_factory_b() as session:
+            repository = ExecutionOutboxRepository(session)
+            reclaimed = repository.claim_pending(limit=1, owner="reclaimer", now=time_now_plus(seconds=60), claim_seconds=30)
+            assert [event.event_id for event in reclaimed] == ["dispatch-claim-lost"]
+            session.commit()
+
+    dispatcher = ExecutionOutboxDispatcher(session_factory_a, handler, claim_seconds=30)
+    result = dispatcher.dispatch_once()
+
+    assert result == {"delivered": 0, "retried": 0, "selected": 1}
+    assert dispatcher.snapshot()["claim_lost"] == 1
+    assert handler_calls == ["dispatch-claim-lost"]
+    with session_factory_a() as session:
+        repository = ExecutionOutboxRepository(session)
+        event = session.scalar(select_event("dispatch-claim-lost"))
+        assert event.status == "PENDING"
+        assert event.claim_owner == "reclaimer"
+
+
+def select_event(event_id):
+    from sqlalchemy import select
+    return select(ExecutionOutboxModel).where(ExecutionOutboxModel.event_id == event_id)
+
+
 def time_now_minus(*, seconds: int):
     from datetime import UTC, datetime, timedelta
     return datetime.now(UTC) - timedelta(seconds=seconds)
+
+
+def time_now_plus(*, seconds: int):
+    from datetime import UTC, datetime, timedelta
+    return datetime.now(UTC) + timedelta(seconds=seconds)
