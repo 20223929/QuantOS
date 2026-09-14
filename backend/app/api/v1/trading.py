@@ -8,6 +8,7 @@ from app.risk.controller import RiskController
 from app.risk.limit import RiskLimit
 from app.storage.execution_outbox import ExecutionOutboxRepository
 from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
+from app.storage.execution_projection import ExecutionEventProjectionRepository
 from app.storage.orm import ORMManager
 from app.storage.trading_repository import TradingRepository
 from app.trading.durable_execution_event_sink import DurableExecutionEventSink
@@ -57,6 +58,15 @@ def serialize_order(order: dict | Order) -> dict:
 
 def serialize_order_record(record, filled_volume: float | None = None) -> dict:
     return {"id": record.order_id, "symbol": record.symbol, "side": record.side, "volume": record.volume, "price": record.price, "offset": record.offset, "status": record.status, "reason": record.reason, "filled_volume": float(filled_volume or 0.0)}
+
+
+def serialize_projection(row) -> dict:
+    return execution_event_sink._serialize_event(
+        row.event_id,
+        row.event_type,
+        row.aggregate_id,
+        __import__("json").loads(row.payload),
+    )
 
 
 def persist_execution(order: Order) -> None:
@@ -142,6 +152,26 @@ async def execution_outbox_status():
         repository = ExecutionOutboxRepository(session)
         counts = repository.status_counts()
     return {**counts, "metrics": execution_outbox_dispatcher.snapshot(), "sink_events": len(execution_event_sink.snapshot())}
+
+
+@router.get("/events")
+async def list_execution_events(
+    event_type: str | None = None,
+    aggregate_id: str | None = None,
+    event_id: str | None = None,
+    limit: int = 100,
+):
+    if limit <= 0 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
+    with _orm.session() as session:
+        repository = ExecutionEventProjectionRepository(session)
+        rows = repository.list_events(
+            event_type=event_type,
+            aggregate_id=aggregate_id,
+            event_id=event_id,
+            limit=limit,
+        )
+        return {"events": [serialize_projection(row) for row in rows]}
 
 
 @router.get("/orders")
