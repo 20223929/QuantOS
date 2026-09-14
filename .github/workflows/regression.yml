@@ -28,11 +28,16 @@ jobs:
           cd backend
           pip install -e ".[dev]"
 
+      - name: Validate Alembic configuration
+        run: |
+          cd backend
+          alembic -c alembic.ini check
+
       - name: Validate database migration
         run: |
           cd backend
-          alembic upgrade head
-          alembic current
+          alembic -c alembic.ini upgrade head
+          alembic -c alembic.ini current
 
       - name: Run backend tests
         run: |
