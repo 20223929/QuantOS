@@ -7,4 +7,8 @@ class Order:
     side: str
     volume: int
     price: float = 0.0
-    status: str = "pending"
+    status: str = "PENDING"
+    offset: str = "OPEN"
+    order_id: str | None = None
+    broker_order: object | None = None
+    reason: str = ""
