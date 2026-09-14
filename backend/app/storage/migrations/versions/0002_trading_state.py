@@ -25,11 +25,11 @@ def upgrade():
     op.add_column("trades", sa.Column("side", sa.String(16), nullable=False, server_default="BUY"))
     op.create_index("ix_trades_trade_id", "trades", ["trade_id"], unique=True)
 
-    op.create_unique_constraint("uq_positions_symbol", "positions", ["symbol"])
+    op.create_index("ix_positions_symbol_unique", "positions", ["symbol"], unique=True)
 
 
 def downgrade():
-    op.drop_constraint("uq_positions_symbol", "positions", type_="unique")
+    op.drop_index("ix_positions_symbol_unique", table_name="positions")
     op.drop_index("ix_trades_trade_id", table_name="trades")
     op.drop_column("trades", "side")
     op.drop_column("trades", "trade_id")
