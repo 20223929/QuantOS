@@ -7,7 +7,6 @@ from sqlalchemy import func, select
 
 from app.storage.models.trading import MarketDataModel, OrderModel, PositionModel, TradeModel
 
-
 _STATUS_ALIASES = {
     "FINISHED": "FILLED",
     "SUCCESS": "FILLED",
@@ -34,6 +33,7 @@ class TradingRepository:
             record = self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
 
         status = _canonical_status(getattr(order, "status", "PENDING"))
+        reason = str(getattr(order, "reason", "") or "")
         if record is None:
             record = OrderModel(
                 order_id=str(order_id) if order_id else None,
@@ -42,6 +42,7 @@ class TradingRepository:
                 volume=float(order.volume),
                 price=order.price,
                 status=status,
+                reason=reason,
                 offset=str(getattr(order, "offset", "OPEN")).upper(),
                 created_at=getattr(order, "created_at", None) or datetime.now(UTC),
             )
@@ -52,6 +53,7 @@ class TradingRepository:
             record.volume = float(order.volume)
             record.price = order.price
             record.status = status
+            record.reason = reason
             record.offset = str(getattr(order, "offset", "OPEN")).upper()
         self.session.flush()
         return record
