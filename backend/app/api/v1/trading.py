@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import create_engine
 
 from app.broker.paper_broker import PaperBroker
 from app.risk.controller import RiskController
@@ -75,7 +74,7 @@ def serialize_order_record(record) -> dict:
     }
 
 
-def _persist_execution(order: Order) -> None:
+def persist_execution(order: Order) -> None:
     with _orm.session() as session:
         repository = TradingRepository(session)
         record = repository.save_order(order)
@@ -109,7 +108,7 @@ async def submit_order(payload: dict):
 
     order = Order(symbol=symbol, side=side, volume=volume, price=price, offset=offset)
     result = execution_engine.execute(order)
-    _persist_execution(order)
+    persist_execution(order)
     return {
         "success": result.success,
         "message": result.message,
