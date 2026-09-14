@@ -29,14 +29,14 @@ def _new_engine():
     return engine
 
 
-def _trade(order: Order):
+def _trade(order: Order, *, trade_id: str | None = None, volume: float | None = None):
     return {
-        "trade_id": f"trade-{order.order_id}",
+        "trade_id": trade_id or f"trade-{order.order_id}",
         "order_id": order.order_id,
         "symbol": order.symbol,
         "side": order.side,
         "price": order.price,
-        "volume": order.volume,
+        "volume": volume if volume is not None else order.volume,
     }
 
 
@@ -120,3 +120,70 @@ def test_execution_outbox_event_is_idempotent_by_event_id():
 
         assert second.id == first.id
         assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 1
+
+
+def test_apply_trade_is_idempotent_and_preserves_filled_order_state():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        order = Order(order_id="O-TRADE-DUP", volume=5)
+        repository.save_order(order)
+
+        first = repository.apply_trade(_trade(order, trade_id="T-DUP"))
+        second = repository.apply_trade(_trade(order, trade_id="T-DUP"))
+        session.commit()
+
+        assert first.id == second.id
+        assert session.scalar(select(func.count(TradeModel.id))) == 1
+        persisted_order = repository.get_order(order.order_id)
+        assert persisted_order.status == "FILLED"
+
+
+def test_apply_trade_transitions_partial_fill_to_filled():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        order = Order(order_id="O-PARTIAL", volume=5)
+        record = repository.save_order(order)
+
+        partial = _trade(order, trade_id="T-PARTIAL", volume=2)
+        partial["order_id"] = record.id
+        repository.apply_trade(partial)
+        assert repository.get_order(order.order_id).status == "PARTIALLY_FILLED"
+
+        final = _trade(order, trade_id="T-FINAL", volume=3)
+        final["order_id"] = record.id
+        repository.apply_trade(final)
+        session.commit()
+
+        assert session.scalar(select(func.count(TradeModel.id))) == 2
+        assert repository.get_order(order.order_id).status == "FILLED"
+
+
+def test_position_recovery_clears_stale_symbols():
+    engine = _new_engine()
+
+    with Session(engine) as session:
+        repository = TradingRepository(session)
+        repository.upsert_position("SHFE.rb", 5)
+        repository.upsert_position("DCE.i", 7)
+        repository.apply_trade(
+            {
+                "trade_id": "T-RB-1",
+                "order_id": None,
+                "symbol": "SHFE.rb",
+                "side": "SELL",
+                "price": 3500,
+                "volume": 2,
+            }
+        )
+        session.commit()
+
+        net = repository.recover_positions_from_trades()
+        session.commit()
+
+        assert net == {"SHFE.rb": -2.0, "DCE.i": 0.0}
+        assert session.scalar(select(PositionModel.volume).where(PositionModel.symbol == "SHFE.rb")) == -2.0
+        assert session.scalar(select(PositionModel.volume).where(PositionModel.symbol == "DCE.i")) == 0.0
