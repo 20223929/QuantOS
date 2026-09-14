@@ -6,9 +6,11 @@ from app.broker.paper_broker import PaperBroker
 from app.risk.controller import RiskController
 from app.risk.limit import RiskLimit
 from app.storage.execution_outbox import ExecutionOutboxRepository
+from app.storage.execution_outbox_dispatcher import ExecutionOutboxDispatcher
 from app.storage.orm import ORMManager
 from app.storage.trading_repository import TradingRepository
 from app.trading.execution_engine import TradingExecutionEngine
+from app.trading.execution_event_sink import ExecutionEventSink
 from app.trading.order import Order
 from app.trading.position import Position
 
@@ -17,11 +19,16 @@ router = APIRouter(prefix="/trading", tags=["trading"])
 broker = PaperBroker()
 risk_controller = RiskController(RiskLimit(max_position=100, max_drawdown=0.2))
 execution_engine = TradingExecutionEngine(broker, risk_controller)
+execution_event_sink = ExecutionEventSink()
 
 _DB_PATH = Path("data/quantos.db")
 _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _orm = ORMManager(f"sqlite:///{_DB_PATH}")
 _orm.create_tables()
+execution_outbox_dispatcher = ExecutionOutboxDispatcher(
+    _orm.session,
+    execution_event_sink.handle,
+)
 
 
 def _load_persisted_positions() -> None:
@@ -137,6 +144,11 @@ async def submit_order(payload: dict):
         "message": result.message,
         "order": serialize_order(order),
     }
+
+
+@router.post("/outbox/dispatch")
+async def dispatch_execution_outbox():
+    return execution_outbox_dispatcher.dispatch_once()
 
 
 @router.get("/orders")
