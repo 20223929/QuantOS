@@ -2,6 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from .models.base import Base
+from .models.outbox import ExecutionOutboxModel
 from .models.trading import MarketDataModel, OrderModel, PositionModel, TradeModel
 
 
