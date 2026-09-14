@@ -33,11 +33,13 @@ class TqSdkBroker:
         vendor_order = api.insert_order(**kwargs)
         order_id = str(getattr(vendor_order, "order_id", getattr(vendor_order, "id", "")))
         status = str(getattr(vendor_order, "status", "ALIVE"))
+        order.order_id = order_id or getattr(order, "order_id", None)
+        order.broker_order = vendor_order
         return {"id": order_id, "status": status, "vendor_order": vendor_order, **kwargs}
 
     def cancel_order(self, order: Any | str) -> dict:
         api = self._require_api()
-        vendor_order = getattr(order, "vendor_order", None)
+        vendor_order = getattr(order, "broker_order", None)
         if vendor_order is None and not isinstance(order, str):
             vendor_order = order
         if vendor_order is None:
