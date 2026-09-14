@@ -99,6 +99,7 @@ def test_durable_sink_deduplicates_same_event_id_across_sink_instances(tmp_path)
     from app.trading.durable_execution_event_sink import DurableExecutionEventSink
     from app.storage.models.base import Base
     from app.storage.models.consumption import ConsumedExecutionEventModel
+    from app.storage.models.execution_projection import ExecutionEventProjectionModel
     from sqlalchemy import create_engine, func, select
     from sqlalchemy.orm import sessionmaker
 
@@ -115,3 +116,35 @@ def test_durable_sink_deduplicates_same_event_id_across_sink_instances(tmp_path)
     assert second.snapshot() == []
     with session_factory() as session:
         assert session.scalar(select(func.count(ConsumedExecutionEventModel.id))) == 1
+        projection = session.scalar(
+            select(ExecutionEventProjectionModel).where(
+                ExecutionEventProjectionModel.event_id == "durable-1"
+            )
+        )
+        assert projection.aggregate_id == "O-DURABLE"
+        assert projection.payload == '{"volume": 2}'
+
+
+def test_durable_sink_projection_survives_sink_recreation(tmp_path):
+    from app.trading.durable_execution_event_sink import DurableExecutionEventSink
+    from app.storage.models.base import Base
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'restart.db'}")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, future=True)
+
+    first = DurableExecutionEventSink(session_factory)
+    first.handle("ORDER_EXECUTED", "O-RESTART", {"_event_id": "restart-1", "volume": 7})
+
+    recreated = DurableExecutionEventSink(session_factory)
+    assert recreated.snapshot() == []
+    assert recreated.durable_snapshot() == [
+        {
+            "event_id": "restart-1",
+            "event_type": "ORDER_EXECUTED",
+            "aggregate_id": "O-RESTART",
+            "payload": {"volume": 7},
+        }
+    ]
