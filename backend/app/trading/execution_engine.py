@@ -23,6 +23,7 @@ class TradingExecutionEngine:
         self.broker = broker
         self.risk_controller = risk_controller
         self.positions: dict[str, Position] = {}
+        self._applied_filled_volume: dict[str, float] = {}
 
     def execute(self, order):
         decision = self.risk_controller.check_order(order, self.positions.get(order.symbol, Position(order.symbol)).volume)
@@ -41,43 +42,66 @@ class TradingExecutionEngine:
             order.order_id = result.get("id") or order.order_id
             order.broker_order = result.get("vendor_order")
             status = str(result.get("status", "SUBMITTED")).upper()
+            if "filled_volume" in result:
+                order.filled_volume = float(result.get("filled_volume") or 0)
         elif isinstance(result, bool):
-            # A legacy/mock broker returns True to mean the order was accepted
-            # and completed. Real broker adapters return an order object/dict
-            # so their explicit lifecycle state is preserved below.
             status = "FILLED" if result else "REJECTED"
         else:
             status = str(getattr(result, "status", "SUBMITTED")).upper()
             order.broker_order = result
             order.order_id = str(getattr(result, "order_id", order.order_id or "")) or order.order_id
+            if hasattr(result, "filled_volume"):
+                order.filled_volume = float(getattr(result, "filled_volume") or 0)
 
         normalized = {
             "FINISHED": "FILLED",
             "SUCCESS": "FILLED",
             "ALIVE": "SUBMITTED",
             "PENDING": "SUBMITTED",
+            "PARTIAL_FILLED": "PARTIALLY_FILLED",
+            "PARTIALLYFILLED": "PARTIALLY_FILLED",
             "REJECTED": "REJECTED",
             "CANCELLED": "CANCELLED",
         }.get(status, status)
         order.status = normalized
 
         if normalized == "FILLED":
-            self._update_position(order)
+            if order.filled_volume <= 0:
+                order.filled_volume = float(order.volume)
+            self._apply_incremental_position(order)
             return ExecutionResult(True, order, "execution completed")
+        if normalized == "PARTIALLY_FILLED":
+            self._apply_incremental_position(order)
+            return ExecutionResult(True, order, "order partially filled")
         if normalized == "REJECTED":
             return ExecutionResult(False, order, "broker rejected order")
         return ExecutionResult(True, order, "order submitted")
 
-    def _update_position(self, order):
+    def _apply_incremental_position(self, order):
+        order_id = str(order.order_id or "")
+        cumulative = float(getattr(order, "filled_volume", 0) or 0)
+        if cumulative <= 0:
+            return
+        previous = self._applied_filled_volume.get(order_id, 0.0)
+        delta = cumulative - previous
+        if delta <= 0:
+            return
+
         position = self.positions.get(order.symbol)
         if position is None:
             position = Position(symbol=order.symbol)
             self.positions[order.symbol] = position
 
         if order.side.upper() in ("BUY", "LONG"):
-            position.volume += order.volume
+            position.volume += delta
         else:
-            position.volume -= order.volume
+            position.volume -= delta
 
         if order.price:
             position.avg_price = order.price
+        self._applied_filled_volume[order_id] = cumulative
+
+    def _update_position(self, order):
+        """Backward-compatible full-fill position update."""
+        order.filled_volume = float(order.volume)
+        self._apply_incremental_position(order)
