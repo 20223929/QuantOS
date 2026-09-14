@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,12 @@ class _ExecutionEngine:
     def __init__(self, status: str = "FILLED"):
         self.status = status
         self.positions: dict[str, Position] = {}
+
+    def snapshot_runtime_state(self):
+        return deepcopy(self.positions)
+
+    def restore_runtime_state(self, snapshot):
+        self.positions = deepcopy(snapshot)
 
     def execute(self, order):
         order.status = self.status
