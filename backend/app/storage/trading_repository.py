@@ -16,10 +16,47 @@ _STATUS_ALIASES = {
     "PARTIALLYFILLED": "PARTIALLY_FILLED",
 }
 
+_ORDER_TRANSITIONS = {
+    "SUBMITTED": {"SUBMITTED", "PARTIALLY_FILLED", "FILLED", "CANCELLED", "REJECTED"},
+    "PARTIALLY_FILLED": {"PARTIALLY_FILLED", "FILLED", "CANCELLED"},
+    "FILLED": {"FILLED"},
+    "CANCELLED": {"CANCELLED", "FILLED"},
+    "REJECTED": {"REJECTED"},
+}
+_TERMINAL_STATUSES = {"FILLED", "CANCELLED", "REJECTED"}
+
+
+class OrderStateTransitionError(ValueError):
+    """Raised when an order lifecycle update would move to an invalid state."""
+
+    def __init__(self, current: str, requested: str):
+        self.current = current
+        self.requested = requested
+        super().__init__(f"invalid order state transition: {current} -> {requested}")
+
 
 def _canonical_status(status: str) -> str:
     normalized = str(status or "").upper()
     return _STATUS_ALIASES.get(normalized, normalized)
+
+
+def _merge_order_status(current: str, requested: str) -> str:
+    current = _canonical_status(current)
+    requested = _canonical_status(requested)
+    if current == requested:
+        return current
+    if current in _TERMINAL_STATUSES:
+        if current == "CANCELLED" and requested == "FILLED":
+            return requested
+        return current
+    if requested == "PENDING":
+        return current
+    allowed = _ORDER_TRANSITIONS.get(current)
+    if allowed is not None and requested in allowed:
+        return requested
+    if current == "" and requested:
+        return requested
+    raise OrderStateTransitionError(current, requested)
 
 
 class TradingRepository:
@@ -34,7 +71,7 @@ class TradingRepository:
         if order_id:
             record = self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
 
-        status = _canonical_status(getattr(order, "status", "PENDING"))
+        requested_status = _canonical_status(getattr(order, "status", "PENDING"))
         reason = str(getattr(order, "reason", "") or "")
         if record is None:
             record = OrderModel(
@@ -43,7 +80,7 @@ class TradingRepository:
                 side=str(order.side).upper(),
                 volume=float(order.volume),
                 price=order.price,
-                status=status,
+                status=requested_status,
                 reason=reason,
                 offset=str(getattr(order, "offset", "OPEN")).upper(),
                 created_at=getattr(order, "created_at", None) or datetime.now(UTC),
@@ -54,7 +91,7 @@ class TradingRepository:
             record.side = str(order.side).upper()
             record.volume = float(order.volume)
             record.price = order.price
-            record.status = status
+            record.status = _merge_order_status(record.status, requested_status)
             record.reason = reason
             record.offset = str(getattr(order, "offset", "OPEN")).upper()
         self.session.flush()
@@ -64,7 +101,7 @@ class TradingRepository:
         record = self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
         if record is None:
             return None
-        record.status = _canonical_status(status)
+        record.status = _merge_order_status(record.status, status)
         self.session.flush()
         return record
 
@@ -84,6 +121,17 @@ class TradingRepository:
             )
         )
         return float(value or 0.0)
+
+    def order_filled_volumes(self) -> dict[str, float]:
+        rows = self.session.execute(
+            select(
+                OrderModel.order_id,
+                func.coalesce(func.sum(TradeModel.volume), 0.0),
+            )
+            .outerjoin(TradeModel, TradeModel.order_id == OrderModel.id)
+            .group_by(OrderModel.id, OrderModel.order_id)
+        )
+        return {str(order_id): float(volume or 0.0) for order_id, volume in rows if order_id is not None}
 
     def save_trade(self, trade):
         trade_id = str(trade.get("trade_id") or trade.get("id") or uuid4())
