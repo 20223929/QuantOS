@@ -1,62 +1,105 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import select
 
 from app.storage.models.trading import MarketDataModel, OrderModel, PositionModel, TradeModel
 
 
+_STATUS_ALIASES = {
+    "FINISHED": "FILLED",
+    "SUCCESS": "FILLED",
+    "ALIVE": "SUBMITTED",
+    "PENDING": "SUBMITTED",
+}
+
+
+def _canonical_status(status: str) -> str:
+    normalized = str(status or "").upper()
+    return _STATUS_ALIASES.get(normalized, normalized)
+
+
 class TradingRepository:
-    """Persistence gateway for orders, trades, positions and market ticks."""
+    """Persistence gateway for trading state with idempotent event writes."""
 
     def __init__(self, session):
         self.session = session
 
     def save_order(self, order):
-        record = OrderModel(
-            order_id=order.order_id,
-            symbol=order.symbol,
-            side=order.side,
-            volume=order.volume,
-            price=order.price,
-            status=order.status,
-            offset=order.offset,
-            created_at=datetime.now(UTC),
-        )
-        self.session.add(record)
+        order_id = getattr(order, "order_id", None)
+        record = None
+        if order_id:
+            record = self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
+
+        status = _canonical_status(getattr(order, "status", "PENDING"))
+        if record is None:
+            record = OrderModel(
+                order_id=str(order_id) if order_id else None,
+                symbol=order.symbol,
+                side=str(order.side).upper(),
+                volume=float(order.volume),
+                price=order.price,
+                status=status,
+                offset=str(getattr(order, "offset", "OPEN")).upper(),
+                created_at=getattr(order, "created_at", None) or datetime.now(UTC),
+            )
+            self.session.add(record)
+        else:
+            record.symbol = order.symbol
+            record.side = str(order.side).upper()
+            record.volume = float(order.volume)
+            record.price = order.price
+            record.status = status
+            record.offset = str(getattr(order, "offset", "OPEN")).upper()
         self.session.flush()
         return record
 
     def update_order_status(self, order_id: str, status: str):
-        record = self.session.scalar(select(OrderModel).where(OrderModel.order_id == order_id))
+        record = self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
         if record is None:
             return None
-        record.status = status
+        record.status = _canonical_status(status)
         self.session.flush()
         return record
 
+    def get_order(self, order_id: str):
+        return self.session.scalar(select(OrderModel).where(OrderModel.order_id == str(order_id)))
+
     def save_trade(self, trade):
-        record = TradeModel(
-            trade_id=str(trade.get("trade_id") or trade.get("id") or f"trade-{datetime.now(UTC).timestamp()}"),
-            order_id=trade.get("order_id"),
-            symbol=trade["symbol"],
-            side=str(trade["side"]).upper(),
-            price=float(trade["price"]),
-            volume=float(trade["volume"]),
-            created_at=datetime.now(UTC),
-        )
-        self.session.add(record)
+        trade_id = str(trade.get("trade_id") or trade.get("id") or uuid4())
+        record = self.session.scalar(select(TradeModel).where(TradeModel.trade_id == trade_id))
+        if record is None:
+            record = TradeModel(trade_id=trade_id, created_at=datetime.now(UTC))
+            self.session.add(record)
+
+        raw_order_id = trade.get("order_id")
+        internal_order_id = None
+        if isinstance(raw_order_id, int):
+            internal_order_id = raw_order_id
+        elif raw_order_id is not None:
+            raw_order_id_str = str(raw_order_id)
+            linked_order = self.session.scalar(select(OrderModel).where(OrderModel.order_id == raw_order_id_str))
+            internal_order_id = linked_order.id if linked_order is not None else (
+                int(raw_order_id_str) if raw_order_id_str.isdigit() else None
+            )
+
+        record.order_id = internal_order_id
+        record.symbol = trade["symbol"]
+        record.side = str(trade["side"]).upper()
+        record.price = float(trade["price"])
+        record.volume = float(trade["volume"])
         self.session.flush()
         return record
 
     def upsert_position(self, symbol: str, volume: float):
         record = self.session.scalar(select(PositionModel).where(PositionModel.symbol == symbol))
         if record is None:
-            record = PositionModel(symbol=symbol, volume=volume, updated_at=datetime.now(UTC))
+            record = PositionModel(symbol=symbol, volume=float(volume), updated_at=datetime.now(UTC))
             self.session.add(record)
         else:
-            record.volume = volume
+            record.volume = float(volume)
             record.updated_at = datetime.now(UTC)
         self.session.flush()
         return record
@@ -73,6 +116,9 @@ class TradingRepository:
 
     def list_orders(self):
         return list(self.session.scalars(select(OrderModel).order_by(OrderModel.id.desc())))
+
+    def list_trades(self):
+        return list(self.session.scalars(select(TradeModel).order_by(TradeModel.id.desc())))
 
     def list_positions(self):
         return list(self.session.scalars(select(PositionModel).order_by(PositionModel.symbol)))
