@@ -1,32 +1,32 @@
+from __future__ import annotations
+
+from app.trading.execution_engine import TradingExecutionEngine
 from app.trading.order import Order
 
 
 class OrderManager:
-    """Coordinate order lifecycle between strategy, risk and broker."""
+    """Coordinate order creation, risk validation and broker execution."""
 
-    def __init__(self, broker, risk_controller=None):
-        self.broker = broker
-        self.risk_controller = risk_controller
-        self.orders = {}
+    def __init__(self, broker, risk_controller):
+        self.execution_engine = TradingExecutionEngine(broker, risk_controller)
+        self.orders: dict[str, Order] = {}
 
-    def create_order(self, symbol: str, side: str, volume: int, price: float | None = None) -> Order:
-        order = Order(
-            symbol=symbol,
-            side=side,
-            volume=volume,
-            price=price,
-        )
-        self.orders[id(order)] = order
+    def create_order(self, symbol: str, side: str, volume: int, price: float | None = None, offset: str = "OPEN") -> Order:
+        order = Order(symbol=symbol, side=side.upper(), volume=volume, price=price or 0.0, offset=offset.upper())
         return order
 
     def submit(self, order: Order):
-        if self.risk_controller:
-            decision = self.risk_controller.check_order(order)
-            if not decision.allowed:
-                order.status = "REJECTED"
-                return order
+        result = self.execution_engine.execute(order)
+        if order.order_id:
+            self.orders[order.order_id] = order
+        return result
 
-        return self.broker.submit_order(order)
+    def cancel(self, order: Order):
+        broker_order = order.broker_order or order.order_id
+        result = self.execution_engine.broker.cancel_order(broker_order)
+        if isinstance(result, dict):
+            order.status = str(result.get("status", order.status)).upper()
+        return result
 
-    def cancel(self, order):
-        return self.broker.cancel_order(order)
+    def get(self, order_id: str):
+        return self.orders.get(order_id)
