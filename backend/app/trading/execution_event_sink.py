@@ -21,15 +21,18 @@ class ExecutionEventSink:
         if not aggregate_id:
             raise ValueError("aggregate_id is required")
 
-        key = (event_type, str(aggregate_id))
+        event_id = str(payload.get("_event_id", "") or "")
+        key = (event_type, event_id) if event_id else (event_type, str(aggregate_id))
         if key in self._event_keys:
             return
 
+        stored_payload = deepcopy(payload)
+        stored_payload.pop("_event_id", None)
         self._events.append(
             {
                 "event_type": event_type,
                 "aggregate_id": aggregate_id,
-                "payload": deepcopy(payload),
+                "payload": stored_payload,
             }
         )
         self._event_keys.add(key)
@@ -37,7 +40,13 @@ class ExecutionEventSink:
             removed = self._events[:-self.max_events]
             del self._events[:-self.max_events]
             self._event_keys.difference_update(
-                (item["event_type"], str(item["aggregate_id"])) for item in removed
+                (
+                    item["event_type"],
+                    str(item["payload"].get("_event_id", ""))
+                    if item["payload"].get("_event_id")
+                    else str(item["aggregate_id"]),
+                )
+                for item in removed
             )
 
     def snapshot(self) -> list[dict]:
