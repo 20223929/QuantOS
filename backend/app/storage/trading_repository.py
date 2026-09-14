@@ -97,12 +97,15 @@ class TradingRepository:
         return record
 
     def apply_trade(self, trade):
-        """Persist a trade and derive the linked order lifecycle state."""
+        """Persist a trade event once and derive the linked order lifecycle state."""
         trade_id = str(trade.get("trade_id") or trade.get("id") or "")
-        before = self.session.scalar(select(TradeModel).where(TradeModel.trade_id == trade_id))
+        existing = self.session.scalar(select(TradeModel).where(TradeModel.trade_id == trade_id))
+        if existing is not None:
+            return existing
+
         record = self.save_trade(trade)
 
-        if before is None and record.order_id is not None:
+        if record.order_id is not None:
             order = self.session.get(OrderModel, record.order_id)
             if order is not None:
                 filled_volume = self.session.scalar(
