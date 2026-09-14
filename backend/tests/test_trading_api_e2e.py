@@ -93,6 +93,7 @@ def test_submit_order_persists_full_execution_chain_and_dispatches(isolated_trad
     )
     assert response["success"] is True
     assert response["order"]["status"] == "FILLED"
+    assert response["order"]["id"]
 
     with orm.session() as session:
         assert session.scalar(select(func.count(OrderModel.id))) == 1
@@ -157,6 +158,7 @@ def test_rejected_order_persists_and_returns_reason(isolated_trading):
         )
     )
     order_id = response["order"]["id"]
+    assert order_id
     assert response["success"] is False
     assert response["order"]["status"] == "REJECTED"
     assert response["order"]["reason"] == "risk check rejected order"
@@ -164,6 +166,7 @@ def test_rejected_order_persists_and_returns_reason(isolated_trading):
     fetched = asyncio.run(trading_api.get_order(order_id))
     assert fetched["order"]["status"] == "REJECTED"
     assert fetched["order"]["reason"] == "risk check rejected order"
+    assert fetched["order"]["filled_volume"] == 0
 
     with orm.session() as session:
         assert session.scalar(select(func.count(OrderModel.id))) == 1
@@ -171,6 +174,7 @@ def test_rejected_order_persists_and_returns_reason(isolated_trading):
         assert session.scalar(select(func.count(PositionModel.id))) == 0
         assert session.scalar(select(func.count(ExecutionOutboxModel.id))) == 0
         record = session.scalar(select(OrderModel))
+        assert record.order_id == order_id
         assert record.reason == "risk check rejected order"
 
 
@@ -226,14 +230,17 @@ def test_get_order_and_list_positions_match_persisted_state(isolated_trading):
         )
     )
     order_id = response["order"]["id"]
+    assert order_id
     listed = asyncio.run(trading_api.list_orders())
     fetched = asyncio.run(trading_api.get_order(order_id))
     positions = asyncio.run(trading_api.list_positions())
 
     assert listed["orders"][0]["id"] == order_id
+    assert listed["orders"][0]["filled_volume"] == 3
     assert fetched["order"]["id"] == order_id
     assert fetched["order"]["status"] == "FILLED"
     assert fetched["order"]["reason"] == ""
+    assert fetched["order"]["filled_volume"] == 3
     assert positions["positions"]["SHFE.rb"] == 3
 
 
@@ -325,14 +332,21 @@ def test_risk_position_boundary_rejects_without_broker_execution(isolated_tradin
             {"symbol": "SHFE.rb", "side": "BUY", "volume": 1, "price": 3500}
         )
     )
+    order_id = response["order"]["id"]
+    assert order_id
     assert response["success"] is False
     assert response["order"]["status"] == "REJECTED"
     assert response["order"]["reason"] == "position limit exceeded"
     assert engine.positions["SHFE.rb"].volume == 100
-    assert response["order"]["id"] is None
+
+    rejected = asyncio.run(trading_api.get_order(order_id))
+    assert rejected["order"]["id"] == order_id
+    assert rejected["order"]["status"] == "REJECTED"
+    assert rejected["order"]["reason"] == "position limit exceeded"
 
     with orm.session() as session:
         record = session.scalar(select(OrderModel))
+        assert record.order_id == order_id
         assert record.status == "REJECTED"
         assert record.reason == "position limit exceeded"
         assert session.scalar(select(func.count(TradeModel.id))) == 0
