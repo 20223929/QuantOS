@@ -3,18 +3,42 @@ name: Docker Build
 on:
   push:
     branches:
-      - origin/master
+      - develop
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*'
   pull_request:
     branches:
-      - origin/master
+      - develop
+  workflow_dispatch:
 
 jobs:
   docker-build:
+    name: Docker Build
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate release version for tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          printf '%s\n' "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          version=$(node -p "require('./frontend/package.json').version")
+          test "$version" = "${GITHUB_REF_NAME#v}"
+
       - name: Docker build
         run: |
-          docker build -t quantos-next .
+          docker build -t quantos-next:${GITHUB_SHA} .
+          docker tag quantos-next:${GITHUB_SHA} quantos-next:ci
+
+      - name: Docker image metadata
+        run: |
+          docker image inspect quantos-next:${GITHUB_SHA} --format '{{.Id}}'
+          docker image inspect quantos-next:${GITHUB_SHA} --format '{{.RepoTags}}'
+
+      - name: Release image tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          docker tag quantos-next:${GITHUB_SHA} quantos-next:${GITHUB_REF_NAME}
+          docker image inspect quantos-next:${GITHUB_REF_NAME} --format '{{.RepoTags}}'
