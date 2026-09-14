@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from app.storage.execution_outbox import ExecutionOutboxRepository
+
+
+@dataclass
+class ExecutionOutboxMetrics:
+    delivered: int = 0
+    retried: int = 0
+    selected: int = 0
 
 
 class ExecutionOutboxDispatcher:
@@ -12,6 +20,7 @@ class ExecutionOutboxDispatcher:
     def __init__(self, session_factory, handler: Callable[[str, str, dict], None]):
         self.session_factory = session_factory
         self.handler = handler
+        self.metrics = ExecutionOutboxMetrics()
 
     def dispatch_once(self, limit: int = 100) -> dict[str, int]:
         delivered = 0
@@ -33,4 +42,14 @@ class ExecutionOutboxDispatcher:
 
             session.commit()
 
+        self.metrics.delivered += delivered
+        self.metrics.retried += retried
+        self.metrics.selected += len(events)
         return {"delivered": delivered, "retried": retried, "selected": len(events)}
+
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "delivered": self.metrics.delivered,
+            "retried": self.metrics.retried,
+            "selected": self.metrics.selected,
+        }
