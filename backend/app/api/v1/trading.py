@@ -13,6 +13,30 @@ risk_controller = RiskController(RiskLimit(max_position=100, max_drawdown=0.2))
 execution_engine = TradingExecutionEngine(broker, risk_controller)
 
 
+def serialize_order(order: dict | Order) -> dict:
+    if isinstance(order, dict):
+        return {
+            "id": order.get("id"),
+            "symbol": order.get("symbol"),
+            "side": order.get("side"),
+            "volume": order.get("volume"),
+            "price": order.get("price"),
+            "offset": order.get("offset", "OPEN"),
+            "status": order.get("status"),
+            "reason": order.get("reason", ""),
+        }
+    return {
+        "id": order.order_id,
+        "symbol": order.symbol,
+        "side": order.side,
+        "volume": order.volume,
+        "price": order.price,
+        "offset": order.offset,
+        "status": order.status,
+        "reason": order.reason,
+    }
+
+
 @router.post("/orders")
 async def submit_order(payload: dict):
     symbol = str(payload.get("symbol", "")).strip()
@@ -22,27 +46,44 @@ async def submit_order(payload: dict):
     offset = str(payload.get("offset", "OPEN")).upper()
     if not symbol or side not in {"BUY", "SELL", "LONG", "SHORT"} or volume <= 0:
         raise HTTPException(status_code=400, detail="symbol, side and positive volume are required")
+    if offset not in {"OPEN", "CLOSE", "CLOSETODAY", "CLOSEYESTERDAY"}:
+        raise HTTPException(status_code=400, detail="unsupported offset")
+
     order = Order(symbol=symbol, side=side, volume=volume, price=price, offset=offset)
     result = execution_engine.execute(order)
     return {
         "success": result.success,
         "message": result.message,
-        "order": {
-            "id": order.order_id,
-            "symbol": order.symbol,
-            "side": order.side,
-            "volume": order.volume,
-            "price": order.price,
-            "offset": order.offset,
-            "status": order.status,
-            "reason": order.reason,
-        },
+        "order": serialize_order(order),
     }
 
 
 @router.get("/orders")
 async def list_orders():
-    return {"orders": broker.query_orders()}
+    return {"orders": {order_id: serialize_order(order) for order_id, order in broker.query_orders().items()}}
+
+
+@router.get("/orders/{order_id}")
+async def get_order(order_id: str):
+    order = broker.query_orders().get(order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
+    return {"order": serialize_order(order)}
+
+
+@router.post("/orders/{order_id}/cancel")
+async def cancel_order(order_id: str):
+    order = broker.query_orders().get(order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
+
+    result = broker.cancel_order(order_id)
+    status = str(result.get("status", "")).upper()
+    if status == "NOT_CANCELLABLE":
+        raise HTTPException(status_code=409, detail=f"order cannot be cancelled: {order_id}")
+    if status == "NOT_FOUND":
+        raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
+    return {"success": True, "order": serialize_order(result)}
 
 
 @router.get("/positions")
