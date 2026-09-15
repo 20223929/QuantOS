@@ -13,11 +13,12 @@ export function useTradingEvents(url: string) {
   const socketRef = useRef<TradingEventSocket | null>(null);
 
   useEffect(() => {
-    const socket = new TradingEventSocket(url, (event: TradingEvent) => {
+    const socket = new TradingEventSocket(url);
+
+    socket.connect((event: TradingEvent) => {
       setEvents((current) => [...current.slice(-99), event]);
     });
 
-    socket.connect();
     socketRef.current = socket;
 
     return () => {
