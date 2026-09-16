@@ -1,7 +1,7 @@
 """create state projection table.
 
 Revision ID: 20260916_state_projection
-Revises:
+Revises: 0007
 Create Date: 2026-09-16
 """
 
@@ -10,10 +10,9 @@ import sqlalchemy as sa
 
 
 revision = "20260916_state_projection"
-down_revision = None
+down_revision = "0007"
 branch_labels = None
 depends_on = None
-
 
 
 def upgrade() -> None:
@@ -37,7 +36,6 @@ def upgrade() -> None:
         "state_projections",
         ["aggregate_id"],
     )
-
 
 
 def downgrade() -> None:
