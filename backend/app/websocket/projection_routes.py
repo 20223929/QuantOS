@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.websocket.projection_stream import ProjectionStream
@@ -20,7 +22,7 @@ async def projection_websocket(websocket: WebSocket, aggregate_id: str):
 
     try:
         while True:
-            await websocket.receive_text()
+            await asyncio.sleep(1)
     except WebSocketDisconnect:
         pass
     finally:
