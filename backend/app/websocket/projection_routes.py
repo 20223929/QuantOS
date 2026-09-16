@@ -1,4 +1,4 @@
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.websocket.projection_stream import ProjectionStream
 
@@ -11,8 +11,17 @@ async def projection_websocket(websocket: WebSocket, aggregate_id: str):
     await websocket.accept()
     stream.subscribe(websocket)
 
+    await websocket.send_json(
+        {
+            "type": "connected",
+            "aggregate_id": aggregate_id,
+        }
+    )
+
     try:
         while True:
             await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
     finally:
         stream.unsubscribe(websocket)
