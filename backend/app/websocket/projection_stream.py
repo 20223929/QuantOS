@@ -2,7 +2,7 @@ from typing import Any, Dict, Set
 
 
 class ProjectionStream:
-    """In-memory projection state broadcaster foundation."""
+    """In-memory projection state broadcaster."""
 
     def __init__(self) -> None:
         self._subscribers: Set[Any] = set()
@@ -14,5 +14,10 @@ class ProjectionStream:
         self._subscribers.discard(client)
 
     async def broadcast(self, state: Dict[str, Any]) -> None:
+        message = {
+            "type": "projection.updated",
+            **state,
+        }
+
         for client in list(self._subscribers):
-            await client.send_json(state)
+            await client.send_json(message)
